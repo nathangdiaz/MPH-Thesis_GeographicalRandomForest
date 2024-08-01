@@ -1,0 +1,86 @@
+---
+title: | 
+    | **Unveiling Vulnerability: Enviornmental Justice Index**
+    | **Training Random Forest and Geographically Weighted Random Forest Models**
+author: |
+    | Nathan Garcia-Diaz
+    |
+    | Brown University, School of Public Health
+date: |
+    |
+    | `r format(Sys.Date(), '%B %d, %Y')`
+mainfont: Times New Roman
+fontsize: 11 pt
+output:
+  pdf_document:
+    highlight: tango
+  latex_engine: luatex
+include-before:
+- '`\newpage{}`{=latex}'
+---
+
+# Random Forest Model
+
+## Training and Testing Split 
+
+The split that will be preformed is a 60-40 split. 
+
+```{r}
+set.seed(926) 
+df = df_eji %>% select(rpl_eji, starts_with("e_"))
+split = initial_split(df, prop = 0.7)
+train_data = training(split)
+test_data = testing(split)
+```
+
+## Training a Random Forest Model
+
+There are 2 hyper parameters in random forest models: the number of randomly selected predictors (m), and the number of trees. A random sample of *m* predictors is chosen as split candidates from the full set of *p* predictors. Generally, for regression problems $m \approx p/3$, and while it is not used in this project for, for classification problems $m \approx \sqrt p$.
+
+```{r initial functions}
+set.seed(926) 
+# defining the number of predictors for each tree
+p = df %>% select(-rpl_eji) %>% ncol()
+m = round(p/3)
+
+# mod2 is a true random forest model
+rf_mod = randomForest::randomForest(rpl_eji ~., data = train_data, mtry = m, ntree = 500, importance = TRUE)
+```
+
+Using the previously taught methods of tuning the hyper parameters of random forest, the results indicate m = 4 and that the number of stress do not vary much much, therefore, the default of 500 will be used. 
+
+```{r tuning using previously taught method}
+set.seed(926) 
+#  using 10-fold cross validation (grid search) to tune the number of predictors
+rf_mod3 = train(rpl_eji ~., data = train_data, method = "rf", 
+      # sets up 10-fold cross validation
+      trControl = trainControl(method = "cv", number = 10),
+      # defaults to a grid search when tuneGrid is provided
+      tuneGrid = expand.grid(mtry = c(1:16)))
+
+rf_mod3$bestTune$mtry
+
+# manually tests for the number of tree that should be preformed
+store_maxtrees = list()
+for (ntree in c(250, 300, 350, 400, 450, 500, 550, 600, 800, 1000, 2000)) {
+    rf_maxtrees = train(rpl_eji~.,
+        data = train_data,
+        method = "rf",
+        tuneGrid = expand.grid(mtry = c(1:16)),
+        trControl = trainControl(method = "cv", number = 10),
+        ntree = ntree)
+    key <- toString(ntree)
+    store_maxtrees[[key]] <- rf_maxtrees
+}
+results_tree <- resamples(store_maxtrees)
+summary(results_tree)
+```
+
+
+```{r}
+rf_mod = randomForest::randomForest(rpl_eji ~., data = train_data, mtry = 4, ntree = 500, importance = TRUE)
+
+varImpPlot(rf_mod, type = 1)
+```
+
+

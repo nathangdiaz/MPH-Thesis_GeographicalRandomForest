@@ -1,0 +1,157 @@
+---
+title: | 
+    | **Unveiling Vulnerability: Social Vulnerability Index**
+    | **Training Random Forest and Geographically Weighted Random Forest Models**
+author: |
+    | Nathan Garcia-Diaz
+    |
+    | Brown University, School of Public Health
+date: |
+    |
+    | `r format(Sys.Date(), '%B %d, %Y')`
+mainfont: Times New Roman
+fontsize: 11 pt
+output:
+  pdf_document:
+    highlight: tango
+  latex_engine: luatex
+include-before:
+- '`\newpage{}`{=latex}'
+---
+
+# Statement of Purpose 
+
+The purpose of this document is training the random forest models for the final 
+
+\newpage 
+
+# Preparation 
+
+
+```{r preparation}
+# general data cleaning 
+library(tidyverse)
+# spatial files 
+library(sf)
+library(spdep)
+library(tmap)
+library(tigris)
+# random forest 
+library(caret)
+library(randomForest)
+library(SpatialML)
+# splitting data
+library(rsample)
+
+# obtaining SPH files for RI tracts
+tracts = tigris::tracts(state = "RI", year = 2010, cb = TRUE)
+
+# importing previously defined svi data from SVI_EDA
+df_svi = read_csv("/Users/diazg/OneDrive/Desktop/Thesis/03_Code/a_data/SVI/df_svi.csv") %>% 
+  # changing variable type to allow for join
+  mutate(fips = as.character(fips)) 
+
+# removing excess characters to allow for join  
+tracts$GEO_ID = str_remove(tracts$GEO_ID, "^1400000US")
+
+# joining data, contains both spatial geometry for RI and SVI data 
+svi_map = inner_join(tracts, df_svi, by = c("GEO_ID" = "fips"))
+```
+
+# Random Forest Model
+
+## Training and Testing Split 
+
+The split that will be preformed is a 60-40 split. 
+
+```{r}
+set.seed(926) 
+df = df_svi %>% select(rpl_themes, starts_with("e_"))
+split = initial_split(df, prop = 0.7)
+train_data = training(split)
+test_data = testing(split)
+```
+
+## Training a Random Forest Model
+
+There are 2 hyper parameters in random forest models: the number of randomly selected predictors (m), and the number of trees. A random sample of *m* predictors is chosen as split candidates from the full set of *p* predictors. Generally, for regression problems $m \approx p/3$, and while it is not used in this project for, for classification problems $m \approx \sqrt p$.
+
+```{r initial functions}
+set.seed(926) 
+# defining the number of predictors for each tree
+p = df %>% select(-rpl_themes) %>% ncol()
+m = round(p/3)
+
+# mod2 is a true random forest model
+rf_mod = randomForest::randomForest(rpl_themes ~., data = train_data, mtry = m, ntree = 500, importance = TRUE)
+```
+
+Using the previously taught methods of tuning the hyper parameters of random forest, the results indicate m = 5 and that the number of stress do not vary much much, therefore, the default of 500 will be used. 
+
+```{r tuning using previously taught method}
+set.seed(926) 
+#  using 10-fold cross validation (grid search) to tune the number of predictors
+rf_mod3 = train(rpl_themes ~., data = train_data, method = "rf", 
+      # sets up 10-fold cross validation
+      trControl = trainControl(method = "cv", number = 10),
+      # defaults to a grid search when tuneGrid is provided
+      tuneGrid = expand.grid(mtry = c(1:16)))
+
+rf_mod3$bestTune$mtry
+
+# manually tests for the number of tree that should be preformed
+store_maxtrees = list()
+for (ntree in c(250, 300, 350, 400, 450, 500, 550, 600, 800, 1000, 2000)) {
+    rf_maxtrees = train(rpl_themes~.,
+        data = train_data,
+        method = "rf",
+        tuneGrid = expand.grid(mtry = c(1:16)),
+        trControl = trainControl(method = "cv", number = 10),
+        ntree = ntree)
+    key = toString(ntree)
+    store_maxtrees[[key]] = rf_maxtrees
+}
+results_tree = resamples(store_maxtrees)
+
+knitr::kable(summary(results_tree))
+
+varImpPlot(rf_mod, type = 1)
+```
+
+# Calculating Moran's I 
+
+At $\alpha = 0.05$, all variables are statistically significant. Variables that had a statistic close to zero include the estimated number of unemployed individuals (16 yrs +) (`e_unemp`) and the estimated number of persons in group quarters (`e_groupq`). Meanwhile, the variables with the top 3 highest moran's i value include the number of minorities (`e_minrty`), the number of individuals who self report having limited english (`e_limeng`), and the 
+
+At $\alpha = 0.05$, all variables are statistically significant.
+
+```{r}
+## define neighbors
+nb_list = poly2nb(svi_map, queen=TRUE)
+summary(nb_list)  # check neighbors
+
+## assign weights
+weights = nb2listw(nb_list, style="W", zero.policy=TRUE)
+summary(weights)   # check weights
+
+## calculating test statistic - moran's i via monte carlo simulation
+columns = as.data.frame(svi_map) %>% select(rpl_themes, starts_with("e_")) %>% colnames()
+moran_df = tibble(NULL)
+
+for (col in columns){
+  # calculate the moran's object
+  res = moran.mc(pull(svi_map, !!col), 
+                 listw = weights,
+                 nsim = 999, 
+                 zero.policy = TRUE)
+  
+  # use the res object to create a new row in moran_df
+  moran_df = moran_df %>% 
+    bind_rows(tibble(variable = col, 
+                     statistic = res$statistic, 
+                     pvalue = res$p.value))
+}
+
+knitr::kable(moran_df, 
+             caption = "Moran's I with Monte Carlo Simulations (nsim = 999)",
+             digits = c(0, 3, 3))
+```

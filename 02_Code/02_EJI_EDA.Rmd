@@ -1,0 +1,421 @@
+---
+title: | 
+    | **Unveiling Vulnerability: Enviornmental Justice Index**
+    | **Data Cleaning and Training Random Forest Models**
+author: |
+    | Nathan Garcia-Diaz
+    |
+    | Brown University, School of Public Health
+date: |
+    |
+    | `r format(Sys.Date(), '%B %d, %Y')`
+mainfont: Times New Roman
+fontsize: 11 pt
+output:
+  pdf_document:
+    highlight: tango
+  latex_engine: luatex
+include-before:
+- '`\newpage{}`{=latex}'
+---
+
+```{r preparation, include = FALSE}
+### importing packages
+options(repos = c(CRAN = "https://cran.r-project.org"))
+# define desired packages 
+library(tidyverse)
+library(janitor)
+library(gtools)
+library(corrplot)
+library(ggpubr)
+# spatial tasks
+library(tigris)
+library(sf)
+library(tidycensus)
+library(tmap)
+# random forest 
+library(caret)
+library(randomForest)
+library(SpatialML)
+# splitting data
+library(rsample)
+# parallell processing
+library(foreach)
+
+
+
+
+### loading data 
+eji = read_csv("C:/Users/diazg/OneDrive/Desktop/Thesis/03_Code/a_data/EJI/Rhode Island.csv") %>% 
+  clean_names()
+
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+knitr::opts_chunk$set(fig.width=6, fig.height=3.8) 
+```
+
+# Data Cleaning and Exploratory Data Analysis 
+
+## SVI Cleaning and Feature Engineering 
+
+The overall summary ranking variable is *RPL_THEMES*, and it will serve as the primary response variable. All **e_** variables will serve as predictor variables, meanwhile, the all **pct_** variables are percentages of the aforementioned variables. The SVI data contains `r length(unique(eji$geoid))` census tracts, however the Census Bureau states that [244 tracts exist](https://www.census.gov/geographies/reference-files/2010/geo/state-local-geo-guides-2010/rhode-island.html#:~:text=Rhode%20Island%20has%20244%20census,groups%2C%20and%2025%2C181%20census%20blocks.).
+
+Below is the output of `str(df)`.
+
+```{r svi cleaning}
+#### Cleaning 
+df_eji = eji %>% 
+  select(geoid, location, rpl_eji,
+         ##### enivornmental burden ##### 
+         # air pollution
+         e_ozone, e_pm, e_dslpm, e_totcr,
+         # toxic sites 
+         e_npl, e_tri, e_tsd, e_rmp, e_coal, e_lead, 
+         # built enviornment 
+         e_park, e_houage, e_wlkind, 
+         # transportation infrastructure
+         e_rail, e_road, e_airprt, 
+         # water pollution 
+         e_impwtr,
+         
+         ##### social vulnerability #####
+         # minority status (racial/ethnic)
+         ep_minrty, 
+         # socioeconomic status
+         ep_pov200, ep_nohsdp, ep_unemp, ep_renter,
+         ep_houbdn, ep_uninsur, ep_noint,
+         # household characteristics
+         ep_age65, ep_age17, ep_disabl, ep_limeng,
+         # housing types
+         ep_groupq, ep_mobile, 
+         
+         ##### social vulnerability #####
+         # chronic disease burden
+         ep_asthma, ep_cancer, ep_bphigh, ep_diabetes, ep_mhlth) %>% 
+  filter_at(vars(rpl_eji), any_vars(. != -999)) %>% 
+  mutate(geoid = as.character(geoid))
+```
+
+## Distribution of Variables 
+
+This section will produce graphs that contain both non-spatial and spatial distribution of predictor variables.
+
+```{r}
+#### Brief EDA - no need for graphics since the table illustrates 
+columns = df_eji %>% 
+  select(-geoid, -location) %>% 
+  colnames()
+
+# Create a for loop to generate histograms for each column
+plot_lst = list()
+plot_lst[["rpl_eji"]] = ggplot(df_eji, aes(rpl_eji)) + geom_histogram() + theme_bw()
+
+for (col in columns) {
+  p = ggplot(df_eji, aes_string(x = col)) + 
+    geom_histogram() + 
+    #ggtitle(paste("Histogram of", col)) +
+    theme_bw()
+  
+  plot_lst[[col]] = p 
+}
+```
+
+```{r}
+# obtaining SPH files for RI tracts
+tracts = tracts(state = "RI", year = 2010, cb = TRUE)
+
+# removing excess characters to allow for join  
+tracts$GEO_ID = str_remove(tracts$GEO_ID, "^1400000US")
+# joining data 
+eji_map = left_join(tracts, df_eji, by = c("GEO_ID" = "geoid"))
+
+# making map for primary index 
+a = ggplot(data = eji_map, aes(fill = rpl_eji)) + 
+  geom_sf(lwd = 0.1) + 
+  theme_void() + 
+  theme(legend.title = element_blank()) +
+  scale_fill_viridis_c()
+
+# making maps for the remaining predictors 
+plot_lst_sp = list()
+plot_lst_sp[["rpl_eji"]] = a
+
+columns = df_eji %>% 
+  select(-geoid, -location,) %>% 
+   colnames()
+  
+for (col in columns){
+  p = ggplot(data = eji_map, aes_string(fill = col)) + 
+    geom_sf(lwd = 0.01) + 
+    scale_fill_viridis_c() + 
+    theme_void()
+  
+  plot_lst_sp[[col]] = p
+}
+```
+
+```{r}
+# overall index variable
+a = ggarrange(plot_lst[["rpl_eji"]], plot_lst_sp[["rpl_eji"]])
+annotate_figure(a, 
+                top = text_grob("Distibution of Overall Index Ranking", face = "bold", size = 14),
+                fig.lab = "Rhode Island, 2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+############ Enviornmental Burden
+a = ggarrange(plot_lst[["e_ozone"]], plot_lst_sp[["e_ozone"]])
+annotate_figure(a, 
+                top = text_grob("Distibution of Annual mean days above O3 regulatory standard (3 yr avg)", face = "bold", size = 14),
+                fig.lab = "EPA AQS 2014-2016", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+b = ggarrange(plot_lst[["e_pm"]], plot_lst_sp[["e_pm"]])
+annotate_figure(b, 
+                top = text_grob("Distibution of Annual mean days above PM2.5 regulatory standard (3 yr avg)", face = "bold", size = 14),
+                fig.lab = "EPA AQS 2014-2016", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+c = ggarrange(plot_lst[["e_dslpm"]], plot_lst_sp[["e_dslpm"]])
+annotate_figure(c, 
+                top = text_grob("Distibution of Ambient concentrations of Diesel (PM/m3)", face = "bold", size = 14),
+                fig.lab = "EPA AQS 2014-2016", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+d = ggarrange(plot_lst[["e_totcr"]], plot_lst_sp[["e_totcr"]])
+annotate_figure(d, 
+                top = text_grob("Distibution of Probability of Contracting Cancer (Continuous Exposure)", face = "bold", size = 14),
+                fig.lab = "EPA AQS 2014-2016", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+e = ggarrange(plot_lst[["e_npl"]], plot_lst_sp[["e_npl"]])
+annotate_figure(e, 
+                top = text_grob("Distibution of Proportion of Tract's Area within 1-mi buffer of EPA National Priority List Site", face = "bold", size = 12),
+                fig.lab = "EPA Geospatial Download", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+i = ggarrange(plot_lst[["e_tri"]], plot_lst_sp[["e_tri"]])
+annotate_figure(i, 
+                top = text_grob("Distibution of Proportion of Tract's Area within 1-mi buffer of EPA Toxic Release Inventory Site", face = "bold", size = 11),
+                fig.lab = "EPA Geospatial Download", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+j = ggarrange(plot_lst[["e_tsd"]], plot_lst_sp[["e_tsd"]])
+annotate_figure(j, 
+                top = text_grob("Distibution of Proportion of Tract's Area within 1-mi buffer of EPA Treatment, Storage, and Disposal site", 
+                                face = "bold", size = 10),
+                fig.lab = "EPA Geospatial Download", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+k = ggarrange(plot_lst[["e_rmp"]], plot_lst_sp[["e_rmp"]])
+annotate_figure(k, 
+                top = text_grob("Distibution of Proportion of Tract's Area within 1-mi buffer of EPA risk management plan site", face = "bold", size = 11),
+                fig.lab = "EPA Geospatial Download", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+l = ggarrange(plot_lst[["e_coal"]], plot_lst_sp[["e_coal"]])
+annotate_figure(l, 
+                top = text_grob("Distibution of Proportion of tract's area within 1-mi buffer of coal mines", face = "bold", size = 14),
+                fig.lab = "EPA Geospatial Download", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+m = ggarrange(plot_lst[["e_lead"]], plot_lst_sp[["e_lead"]])
+annotate_figure(m, 
+                top = text_grob("Distibution of Proportion of tract's area within 1-mi buffer of lead mines", face = "bold", size = 14),
+                fig.lab = "EPA Geospatial Download", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+n  = ggarrange(plot_lst[["e_park"]], plot_lst_sp[["e_park"]])
+annotate_figure(n, 
+                top = text_grob("Distibution of Proportion of tract's area within 1-mi buffer of green space", face = "bold", size = 14),
+                fig.lab = "2020 TomTom MultiNet Enterpirse Dataset", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+o = ggarrange(plot_lst[["e_park"]], plot_lst_sp[["e_park"]])
+annotate_figure(o, 
+                top = text_grob("Distibution of Percentage of houses built pre 1980 (lead exposure)", face = "bold", size = 14),
+                fig.lab = "EPA Geospatial Download", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+p = ggarrange(plot_lst[["e_houage"]], plot_lst_sp[["e_houage"]])
+annotate_figure(p, 
+                top = text_grob("Distibution of Percentage of houses built pre 1980 (lead exposure)", face = "bold", size = 14),
+                fig.lab = "No Citation", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+q = ggarrange(plot_lst[["e_wlkind"]], plot_lst_sp[["e_wlkind"]])
+annotate_figure(q, 
+                top = text_grob("Distibution of Walkability Values", face = "bold", size = 14),
+                fig.lab = "EPA Walkability Inex", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+r = ggarrange(plot_lst[["e_rail"]], plot_lst_sp[["e_rail"]])
+annotate_figure(r, 
+                top = text_grob("Distibution of Proportion of tract's area within 1-mi buffer of railroad", face = "bold", size = 12),
+                fig.lab = "EPA Walkability Inex", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+s = ggarrange(plot_lst[["e_road"]], plot_lst_sp[["e_road"]])
+annotate_figure(s, 
+                top = text_grob("Distibution of Proportion of tract's area within 1-mi buffer of high volume road or highway", face = "bold", size = 12),
+                fig.lab = "EPA Walkability Inex", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+
+t = ggarrange(plot_lst[["e_airprt"]], plot_lst_sp[["e_airprt"]])
+annotate_figure(t, 
+                top = text_grob("Distibution of Proportion of tract's area within 1-mi buffer of airport", face = "bold", size = 14),
+                fig.lab = "EPA Walkability Inex", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+
+############ SocioEconomic Status
+u = ggarrange(plot_lst[["ep_minrty"]], plot_lst_sp[["ep_minrty"]])
+annotate_figure(t, 
+                top = text_grob("Distibution of Percentage of Minority Persons", face = "bold", size = 14),
+                fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+v = ggarrange(plot_lst[["ep_pov200"]], plot_lst_sp[["ep_pov200"]])
+annotate_figure(v, 
+                top = text_grob("Distibution of Percentage of Persons Below 200% Poverty", face = "bold", size = 14),
+                fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+w = ggarrange(plot_lst[["ep_nohsdp"]], plot_lst_sp[["ep_nohsdp"]])
+annotate_figure(w, 
+                top = text_grob("Distibution of Percentage of Persons with no High School Diploma (age 25+) ", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+x = ggarrange(plot_lst[["ep_unemp"]], plot_lst_sp[["ep_unemp"]])
+annotate_figure(x, 
+                top = text_grob("Distibution of Percentage of Unemployed Persons", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+y = ggarrange(plot_lst[["ep_unemp"]], plot_lst_sp[["ep_unemp"]])
+annotate_figure(y, 
+                top = text_grob("Distibution of Percentage of Unemployed Persons", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+z = ggarrange(plot_lst[["ep_renter"]], plot_lst_sp[["ep_renter"]])
+annotate_figure(z, 
+                top = text_grob("Distibution of Percentage of Renters", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+aa = ggarrange(plot_lst[["ep_houbdn"]], plot_lst_sp[["ep_houbdn"]])
+annotate_figure(aa, 
+                top = text_grob("Distibution of Percentage of households that make less than $75,000", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+ab = ggarrange(plot_lst[["ep_houbdn"]], plot_lst_sp[["ep_uninsur"]])
+annotate_figure(ab, 
+                top = text_grob("Distibution of Percentage of Unisured Persons", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+ac = ggarrange(plot_lst[["ep_noint"]], plot_lst_sp[["ep_noint"]])
+annotate_figure(ac, 
+                top = text_grob("Distibution of Percentage of Persons Without Internet", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+ad = ggarrange(plot_lst[["ep_age65"]], plot_lst_sp[["ep_age65"]])
+annotate_figure(ad, 
+                top = text_grob("Distibution of Percentage of persons aged 65 and older", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+ae = ggarrange(plot_lst[["ep_age17"]], plot_lst_sp[["ep_age17"]])
+annotate_figure(ad, 
+                top = text_grob("Distibution of Percentage of persons aged 17 and younger", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+af = ggarrange(plot_lst[["ep_disabl"]], plot_lst_sp[["ep_disabl"]])
+annotate_figure(af, 
+                top = text_grob("Distibution of Percentage of civilian noninstitutionalized population with a disability", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+ag = ggarrange(plot_lst[["ep_limeng"]], plot_lst_sp[["ep_limeng"]])
+annotate_figure(ag, 
+                top = text_grob("Distibution of Percentage of persons (age 5+) who speak English 'less than well'", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+ah = ggarrange(plot_lst[["ep_groupq"]], plot_lst_sp[["ep_groupq"]])
+annotate_figure(ah, 
+                top = text_grob("Distibution of Percentage of persons in group quarters estimate", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+ai = ggarrange(plot_lst[["ep_mobile"]], plot_lst_sp[["ep_mobile"]])
+annotate_figure(ai, 
+                top = text_grob("Distibution of Percentage of Mobile Homes", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+####### Health Vulnerability 
+aj = ggarrange(plot_lst[["ep_asthma"]], plot_lst_sp[["ep_asthma"]])
+annotate_figure(ai, 
+                top = text_grob("Distibution of Percentage Individuals With Asthma", face = "bold", size = 12))
+                
+ak = ggarrange(plot_lst[["ep_cancer"]], plot_lst_sp[["ep_cancer"]])
+annotate_figure(ak, 
+                top = text_grob("Distibution of Percentage Individuals With Cancer", face = "bold", size = 12))
+                
+al = ggarrange(plot_lst[["ep_bphigh"]], plot_lst_sp[["ep_bphigh"]])
+annotate_figure(al, 
+                top = text_grob("Distibution of Percentage Individuals With High Blood Pressure", face = "bold", size = 12))
+                
+am = ggarrange(plot_lst[["ep_diabetes"]], plot_lst_sp[["ep_diabetes"]])
+annotate_figure(am, 
+                top = text_grob("Distibution of Percentage Individuals With Diabetes", face = "bold", size = 12))
+                
+an = ggarrange(plot_lst[["ep_mhlth"]], plot_lst_sp[["ep_mhlth"]])
+annotate_figure(an, 
+                top = text_grob("Distibution of Percentage Individuals No Reporting Good Mental Health", face = "bold", size = 12))
+```
+\newpage
+
+## Correlation Matrix
+
+```{r, fig.height = 7, fig.width = 10}
+# correlation matrix
+temp = df_eji %>% select(-geoid, -location)
+temp = cor(temp)
+corrplot(temp, method = "square", type="upper", sig.level = 0.05, insig = "blank")
+```
+
+\newpage
+
+## Associations Between Response and Predictor Variables 
+
+The following section illustrates the need for non-linear regression models. The Social Vulnerability Index covers 4 themes: Socioeconomic Status, Household Characteristics, Racial & Ethnic Minority Status, and Housing Type & Transportation Status.
+
+```{r}
+lst = list()
+
+columns = df_eji %>% 
+  select(-geoid, -location) %>% 
+  colnames()
+
+for (col in columns){
+  p = ggplot(data = df_eji, aes_string(x = col, y = "rpl_eji")) + 
+    geom_point() + 
+    theme_bw() +
+    #labs(title = paste("Scatter plot of", col, "vs. rpl_themes")) +
+    geom_smooth(se = FALSE)
+  
+  lst[[col]] = p
+}
+
+############ Socioeconomic Status
+
+# theme: enviornmental burden
+theme1a = ggarrange(lst[["e_ozone"]], lst[["e_pm"]], lst[["e_dslpm"]], lst[["e_totcr"]], lst[["e_npl"]], lst[["e_tri"]])
+annotate_figure(theme1a, top = text_grob("Theme: Enviornmental Burden", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"))
+
+theme1b = ggarrange(lst[["e_tsd"]], lst[["e_rmp"]], lst[["e_coal"]], lst[["e_lead"]], lst[["e_park"]], lst[["e_houage"]])
+annotate_figure(theme1a, top = text_grob("Theme: Enviornmental Burden", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"))
+
+theme1c = ggarrange(lst[["e_wlkind"]], lst[["e_rail"]], lst[["e_road"]], lst[["e_airprt"]], lst[["e_impwtr"]])
+annotate_figure(theme1c, top = text_grob("Theme: Enviornmental Burden", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"))
+
+# theme: Social Vulnerability 
+theme2a = ggarrange(lst[["ep_minrty"]], lst[["ep_pov200"]], lst[["ep_nohsdp"]], lst[["ep_unemp"]], lst[["ep_renter"]], lst[["ep_houbdn"]])
+annotate_figure(theme2a, top = text_grob("Theme: Social Vulnerability", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"))
+
+theme2b = ggarrange(lst[["ep_uninsur"]], lst[["ep_noint"]], lst[["ep_age65"]], lst[["ep_age17"]], lst[["ep_disabl"]], lst[["ep_limeng"]])
+annotate_figure(theme2b, top = text_grob("Theme: Social Vulnerability", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"))
+
+theme2c = ggarrange(lst[["ep_groupq"]], lst[["ep_mobile"]])
+annotate_figure(theme2c, top = text_grob("Theme: Social Vulnerability", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"))
+
+# theme: Health Vulnerability 
+theme3 = ggarrange(lst[["ep_asthma"]], lst[["ep_cancer"]], lst[["ep_bphigh"]], lst[["ep_diabetes"]], lst[["ep_mhlth"]])
+annotate_figure(theme3, top = text_grob("Theme: Health Vulnerability", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"))
+```
+```{r}
+#setwd("/Users/diazg/OneDrive/Desktop/Thesis/03_Code/a_data/EJI")
+#eji_map = st_as_sf(eji_map)
+#st_write(eji_map, "eji_map.shp")
+```
+ 
+ 

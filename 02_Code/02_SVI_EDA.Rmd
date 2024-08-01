@@ -1,0 +1,356 @@
+---
+title: | 
+    | **Unveiling Vulnerability: Social Vulnerability Index**
+    | **Data Cleaning and Exploratory Data Analysis**
+author: |
+    | Nathan Garcia-Diaz
+    |
+    | Brown University, School of Public Health
+date: |
+    |
+    | `r format(Sys.Date(), '%B %d, %Y')`
+mainfont: Times New Roman
+fontsize: 11 pt
+output:
+  pdf_document:
+    highlight: tango
+  latex_engine: luatex
+include-before:
+- '`\newpage{}`{=latex}'
+---
+
+```{r preparation, include = FALSE}
+### importing packages
+options(repos = c(CRAN = "https://cran.r-project.org"))
+# define desired packages 
+library(tidyverse)
+library(janitor)
+library(gtools)
+library(corrplot)
+library(ggpubr)
+# spatial tasks
+library(tigris)
+library(sf)
+library(tidycensus)
+library(tmap)
+# random forest 
+library(caret)
+library(randomForest)
+library(SpatialML)
+# splitting data
+library(rsample)
+# parallell processing
+library(foreach)
+
+### loading data 
+svi = read_csv("C:/Users/diazg/OneDrive/Desktop/Thesis/03_Code/a_data/SVI/RhodeIsland.csv") %>% 
+  clean_names()
+
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+knitr::opts_chunk$set(fig.width=6, fig.height=3.8) 
+```
+
+# Data Cleaning and Exploratory Data Analysis 
+
+## SVI Cleaning and Feature Engineering 
+
+The overall summary ranking variable is *RPL_THEMES*, and it will serve as the primary response variable. All **e_** variables will serve as predictor variables, meanwhile, the all **pct_** variables are percentages of the aforementioned variables. The SVI data contains `r length(unique(svi$fips))` census tracts, however the Census Bureau states that [244 tracts exist](https://www.census.gov/geographies/reference-files/2010/geo/state-local-geo-guides-2010/rhode-island.html#:~:text=Rhode%20Island%20has%20244%20census,groups%2C%20and%2025%2C181%20census%20blocks.).
+
+Below is the output of `str(df)`.
+
+```{r svi cleaning}
+#### Cleaning 
+df_svi = svi %>% 
+  select(fips, location, rpl_themes, starts_with("e_")) %>%
+  select(-e_hu, -e_hh, -(e_daypop:e_otherrace))
+
+df_svi = df_svi %>% 
+  filter_at(vars(rpl_themes), any_vars(. != -999)) %>% 
+  mutate(fips = as.character(fips)) %>%
+  mutate(across(starts_with("e"), ~ ./e_totpop, .names = "pct_{col}")) %>% 
+  select(-e_totpop, -pct_e_totpop)
+
+str(df_svi)
+```
+
+## Distribution of Variables 
+
+This section will produce graphs that contain both non-spatial and spatial distribution of predictor variables. 
+
+```{r}
+#### Brief EDA - no need for graphics since the table illustrates 
+columns = df_svi %>% 
+  select(starts_with("e_")) %>% 
+  colnames()
+
+# Create a for loop to generate histograms for each column
+plot_lst = list()
+plot_lst[["rpl_themes"]] = ggplot(df_svi, aes(rpl_themes)) + geom_histogram() + theme_bw()
+
+for (col in columns) {
+  p = ggplot(df_svi, aes_string(x = col)) + 
+    geom_histogram() + 
+    #ggtitle(paste("Histogram of", col)) +
+    theme_bw()
+  
+  plot_lst[[col]] = p 
+}
+```
+
+```{r}
+# obtaining SPH files for RI tracts
+tracts = tracts(state = "RI", year = 2010, cb = TRUE)
+
+# removing excess characters to allow for join  
+tracts$GEO_ID = str_remove(tracts$GEO_ID, "^1400000US")
+# joining data 
+svi_map = left_join(tracts, df_svi, by = c("GEO_ID" = "fips"))
+
+# making map for primary index 
+a = ggplot(data = svi_map, aes(fill = rpl_themes)) + 
+  geom_sf(lwd = 0.1) + 
+  theme_void() + 
+  theme(legend.title = element_blank()) +
+  scale_fill_viridis_c()
+
+# making maps for the remaining predictors 
+plot_lst_sp = list()
+plot_lst_sp[["rpl_themes"]] = a
+
+columns = df_svi %>% 
+  select(starts_with("pct_e_")) %>% 
+  colnames()
+  
+for (col in columns){
+  p = ggplot(data = svi_map, aes_string(fill = col)) + 
+    geom_sf(lwd = 0.01) + 
+    scale_fill_viridis_c() + 
+    theme_void()
+  
+  plot_lst_sp[[col]] = p
+}
+```
+
+```{r}
+# overall index variable
+a = ggarrange(plot_lst[["rpl_themes"]], plot_lst_sp[["rpl_themes"]])
+annotate_figure(a, 
+                top = text_grob("Distibution of Overall Index Ranking", face = "bold", size = 14),
+                fig.lab = "Rhode Island, 2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+############ SocioEconomic Status
+
+# persons below 150% poverty estimate
+b = ggarrange(plot_lst[["e_pov150"]], plot_lst_sp[["pct_e_pov150"]])
+annotate_figure(b, 
+                top = text_grob("Distibution of Person Below 150% Poverty Estimates", face = "bold", size = 14),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+# civilian (age 16+) unemployed estimate
+c = ggarrange(plot_lst[["e_unemp"]], plot_lst_sp[["pct_e_unemp"]])
+annotate_figure(c, 
+                top = text_grob("Distibution of Civilian (16 yrs+) Unemployed Estimates", face = "bold", size = 14),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+# housing cost-burdened occupied housing united with annual income less than 75,000
+d = ggarrange(plot_lst[["e_hburd"]], plot_lst_sp[["pct_e_hburd"]])
+annotate_figure(d, 
+                top = text_grob("Distibution of Cost-Burdened Occupied Housing United (< $75k)", face = "bold", size = 14),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+# persons (25 yrs +) with no high school diploma estiamte
+e = ggarrange(plot_lst[["e_nohsdp"]], plot_lst_sp[["pct_e_nohsdp"]])
+annotate_figure(d, 
+                top = text_grob("Distibution of Persons (25 yrs+) With No High School Diploma", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+# uninsured in the total civilian noninstiutionalized population estimate
+f = ggarrange(plot_lst[["e_uninsur"]], plot_lst_sp[["pct_e_uninsur"]])
+ annotate_figure(f, 
+                top = text_grob("Distibution of Uninsured in Total Civilian Non-Institutionalized Population Estimate", face = "bold", size = 10),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+ 
+################ Household Characteristics 
+# distribution of persons age 65 or older
+a = ggarrange(plot_lst[["e_age65"]], plot_lst_sp[["pct_e_age65"]])
+ annotate_figure(a, 
+                top = text_grob("Distibution of Persons Aged 65 or Older Estimate", face = "bold", size = 14),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+# distribution of persons 17 or younger
+b = ggarrange(plot_lst[["e_age17"]], plot_lst_sp[["pct_e_age17"]])
+ annotate_figure(b, 
+                top = text_grob("Distibution of Persons Aged 17 or Younger Estimate", face = "bold", size = 14),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+ 
+#  total civilian noninstiutionalized population with a disability estimate
+c = ggarrange(plot_lst[["e_uninsur"]], plot_lst_sp[["pct_e_uninsur"]])
+ annotate_figure(c, 
+                top = text_grob("Distibution of Total Civilian Non-Institutionalized Population with a Disability Estimate", face = "bold", size = 10),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+# single parent hosueholds with children less than 18 estiamte 
+d = ggarrange(plot_lst[["e_sngpnt"]], plot_lst_sp[["pct_e_sngpnt"]])
+annotate_figure(d, 
+               top = text_grob("Distribution of Single Parent Households with Children Less than 18 Estimate", face = "bold", size = 10),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+# persons (5 yrs+) who speak english " less than well" estimate
+e = ggarrange(plot_lst[["e_limeng"]], plot_lst_sp[["pct_e_limeng"]])
+annotate_figure(e, 
+                top = text_grob("Distribution of Person (5 yrs+) Who Speak English 'less than well' Estiamte", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+################# Racial & Ethnic Minority Status
+# minority estimate (Hispanic or latino of any race)
+a = ggarrange(plot_lst[["e_minrty"]], plot_lst_sp[["pct_e_minrty"]])
+annotate_figure(a, 
+                top = text_grob("Distribution of Minority Persons Estimate", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+################# Housing Type & Transportation 
+# housing in structures with 10 or more unites estimate
+a = ggarrange(plot_lst[["e_munit"]], plot_lst_sp[["pct_e_munit"]])
+annotate_figure(a, 
+                top = text_grob("Distribution of Housing in Structures with 10 or More Units Estimate", face = "bold", size = 12),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+# mobile homes estimate
+b = ggarrange(plot_lst[["e_mobile"]], plot_lst_sp[["pct_e_mobile"]])
+annotate_figure(a, 
+                top = text_grob("Distribution of Mobile Homes Estimate", face = "bold", size = 14),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+# More People Than Rooms Estimates
+c = ggarrange(plot_lst[["e_mobile"]], plot_lst_sp[["pct_e_mobile"]])
+annotate_figure(c, 
+                top = text_grob("Distribution of Occupied Housing Units With More People Than Rooms Estimate", face = "bold", size = 10),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+# households with no vehicle available 
+d = ggarrange(plot_lst[["e_noveh"]], plot_lst_sp[["pct_e_noveh"]])
+annotate_figure(d, 
+                top = text_grob("Distribution of Households With No Vehicles Avaiable Estimate", face = "bold", size = 14),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+
+# households with no vehicle available 
+f = ggarrange(plot_lst[["e_groupq"]], plot_lst_sp[["pct_e_groupq"]])
+annotate_figure(f, 
+                top = text_grob("Distribution of Persons In Group Quarters Estimate", face = "bold", size = 14),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+```
+
+## Correlation Matrix
+
+```{r, fig.height = 5, fig.width = 8}
+# correlation matrix
+temp = df_svi %>% select(-fips, -location) %>% select(rpl_themes, starts_with("e_"))
+temp = cor(temp)
+corrplot(temp, method = "square", type="upper", sig.level = 0.05, insig = "blank")
+```
+
+\newpage
+
+## Associations Between Response and Predictor Variables 
+
+The following section illustrates the need for non-linear regression models. The Social Vulnerability Index covers 4 themes: Socioeconomic Status, Household Characteristics, Racial & Ethnic Minority Status, and Housing Type & Transportation Status.
+
+```{r}
+lst = list()
+
+columns = df_svi %>% 
+  select(starts_with("e_")) %>% 
+  colnames()
+
+for (col in columns){
+  p = ggplot(data = df_svi, aes_string(x = col, y = "rpl_themes")) + 
+    geom_point() + 
+    theme_bw() +
+    #labs(title = paste("Scatter plot of", col, "vs. rpl_themes")) +
+    geom_smooth(se = FALSE)
+  
+  lst[[col]] = p
+}
+
+############ Socioeconomic Status
+
+# theme: socioeconomic status
+a = ggarrange(lst[["e_pov150"]], lst[["e_unemp"]], lst[["e_hburd"]], lst[["e_nohsdp"]], lst[["e_uninsur"]])
+annotate_figure(a, top = text_grob("Theme: Socioeconomic Status", face = "bold", size = 14),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"))
+
+# theme: household characteristics
+b = ggarrange(lst[["e_age65"]], lst[["e_age17"]], lst[["e_disabl"]], lst[["e_sngpnt"]], lst[["e_limeng"]])
+annotate_figure(b, top = text_grob("Theme: Household Characteristics", face = "bold", size = 14),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"))
+
+# theme: racial & ethnic minority status
+c = ggarrange(lst[["e_minrty"]])
+annotate_figure(c, top = text_grob("Theme: Racial & Ethnic Minority Status", face = "bold", size = 14),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"))
+
+# theme: housing type & transportation
+d = ggarrange(lst[["e_munit"]], lst[["e_mobile"]], lst[["e_crowd"]], lst[["e_noveh"]], lst[["e_groupq"]])
+annotate_figure(d, top = text_grob("Theme: Housing Type & Transportation Status", face = "bold", size = 14),
+                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"))
+```
+
+```{r}
+setwd("/Users/diazg/OneDrive/Desktop/Thesis/03_Code/a_data/SVI")
+write.csv(df_svi, "/Users/diazg/OneDrive/Desktop/Thesis/03_Code/a_data/SVI/df_svi.csv")
+#st_write(svi_map, "svi_map.shp")
+```
+
+
+```{r}
+#mtryiter <- function(from, to, stepFactor=1.05) {
+#  nextEl <- function() {
+#    if (from > to) stop('StopIteration')
+#    i <- fromfrom <<- ceiling(from * stepFactor)
+#    i
+#    }
+#  obj <- list(nextElem=nextEl)
+#  class(obj) <- c('abstractiter', 'iter')
+#  obj
+#  }
+# Create a vector of ntree values of interest
+#vntree <- c(51, 101, 501, 1001, 1501)
+
+# Specify the predictor (x) and outcome (y) object
+# x contains columns 3, 5:12 and 15:20 as predictor variables# Type names(world)to see column index numbers
+# The 13th column is literacy, the outcome variable
+#x <- df[,2:ncol(df)]
+#y <- df[,1]
+
+# Create a function (tune) to get random forest error information for different mtry values.
+# Note this function handles both classification and regression 
+#tune <- function(x, y, ntree=vntree, mtry=NULL, keep.forest=FALSE, ...) {
+#  comb <- if (is.factor(y))
+#    function(a, b) rbind(a, data.frame(ntree=ntree, mtry=b$mtry, error=b$err.rate[ntree, 1]))
+#  else
+#    function(a, b) rbind(a, data.frame(ntree=ntree, mtry=b$mtry, error=b$mse[ntree]))
+#  foreach(mtry=mtryiter(1, ncol(x)), .combine=comb, .init=NULL, .packages='randomForest') %dopar% {
+#            randomForest(x, y, ntree=max(ntree), mtry=mtry, keep.forest=FALSE, ...)}}
+
+# Create and print randomForest() results
+#results <- tune(x, y)
+```
+
+
+
+```{r, include = FALSE}
+# Appendix A - Spatial Distribution of Estimates 
+# making maps for the remaining predictors 
+plot_lst_sp = list()
+
+columns = df_svi %>% 
+  select(starts_with("e_")) %>% 
+  colnames()
+  
+for (col in columns){
+  p = ggplot(data = svi_map, aes_string(fill = col)) + 
+    geom_sf(lwd = 0.05) + 
+    labs(title = paste("Spatial Distibution of", col)) +
+    scale_fill_viridis_b() + 
+    theme_void()
+  
+  plot_lst_sp[[col]] = p
+}
+```
+
