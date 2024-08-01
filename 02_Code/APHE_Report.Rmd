@@ -1,0 +1,379 @@
+---
+title: | 
+    | **Assessing Relative Agreement in Ranking Rhode Island Census Tracts Across the Social Vulernability Index and the Enviornmental Justice Index**
+author: |
+    | Nathan Garcia-Diaz
+    |
+    | Advisor: William Goedel, PhD
+    |
+    | Brown University, School of Public Health
+date: |
+    |
+    | `r format(Sys.Date(), '%B %d, %Y')`
+mainfont: Times New Roman
+fontsize: 11 pt
+output:
+  pdf_document:
+    highlight: tango
+    fig_width: 7
+    fig_height: 6
+    toc: true
+  latex_engine: luatex
+include-before:
+- '`\newpage{}`{=latex}'
+---
+
+# Purpose Statement 
+
+This purpose of this document is assess the relative agreement of Rhode Island census tracts across the Social Vulnerability Index, Environmental Justice Index, and the Rhode Island Health Equity Index. The index values of interest include the overall vulnerability value and the values associated with sub themes found in all indices. The latter of which will not be compared because there is no consistency in the themes. 
+
+In the first half of the document, all indices will be cleaned, and feature engineer the desired quantiles (i.e., 3, 4, 5 & 10). In the second half of the document, the Kappa coefficient will be calculated. The Appendix will include maps of the spatial distribution of the index values.
+
+\newpage
+
+```{r preparation, include = FALSE}
+### importing packages
+options(repos = c(CRAN = "https://cran.r-project.org"))
+# define desired packages 
+library(tidyverse)
+library(gtools)
+library(psych)
+
+### loading data 
+svi = read_csv("C:/Users/diazg/OneDrive/Desktop/Thesis/03_Code/a_data/clean_data/SVI/RhodeIsland.csv")
+eji = read_csv("C:/Users/diazg/OneDrive/Desktop/Thesis/03_Code/a_data/clean_data/EJI/Rhode Island.csv")
+```
+
+# Cleaning Indices and Feature Engineering Quantiles
+
+## Social Vulnerabilty Index Variables
+
+Variables that will be pulled from the SVI include: the summary variable and the 4 theme specific variables (i.e., Socioeconomic Status, Household Characteristics, Racial & Ethinic Minority Status, Housing Type & Transportation). The SVI data contains `r length(unique(svi$FIPS))` census tracts, however the Census Bureau states that [244 tracts exist](https://www.census.gov/geographies/reference-files/2010/geo/state-local-geo-guides-2010/rhode-island.html#:~:text=Rhode%20Island%20has%20244%20census,groups%2C%20and%2025%2C181%20census%20blocks.). 
+
+```{r svi cleaning,  include = FALSE}
+#### Cleaning 
+df_svi = svi %>% select(FIPS, LOCATION, starts_with("RPL_")) 
+
+df_svi = df_svi %>% 
+   filter_at(vars(RPL_THEMES, RPL_THEME1, RPL_THEME2, 
+                  RPL_THEME3, RPL_THEME4), 
+             any_vars(. != -999))
+
+#### Brief EDA - no need for graphics since the table illustrates 
+# the values are relatively the same
+df_svi %>% select(starts_with("RPL_")) %>% summary()
+
+#### Creating Quantiles 
+generate_quantiles = function(data, column_name) {
+  quantiles = list(
+    thirds = quantcut(data[[column_name]], q = 3, na.rm = TRUE),
+    fourths = quantcut(data[[column_name]], q = 4, na.rm = TRUE),
+    fifths = quantcut(data[[column_name]], q = 5, na.rm = TRUE),
+    tenths = quantcut(data[[column_name]], q = 10, na.rm = TRUE)
+  )
+    return(quantiles)
+}
+
+# List of columns to apply quantile calculations
+columns = df_svi %>% select(starts_with("RPL_")) %>% colnames()
+
+# Apply the quantile function to each column and bind the results
+quantile_results = as.data.frame(lapply(columns, function(col) generate_quantiles(df_svi, col)))
+
+# join the two dataframes together 
+df_svi = cbind(df_svi, quantile_results)
+```
+
+## Enviornmental Justice Index
+
+The variables pulled from the EJI include: the overall summary value and the EJI 3 theme specific variables (i.e., Environmental Burden, Social Vulnerability, Health Vulnerability). The EJI contains `r length(unique(eji$GEOID))` census tracts, however the Census Bureau states that [244 tracts exist](https://www.census.gov/geographies/reference-files/2010/geo/state-local-geo-guides-2010/rhode-island.html#:~:text=Rhode%20Island%20has%20244%20census,groups%2C%20and%2025%2C181%20census%20blocks.).
+
+```{r eji cleaning, include = FALSE}
+#### Cleaning 
+df_eji = eji %>% 
+  select(GEOID, Location, RPL_EJI, RPL_EBM, RPL_SVM, RPL_HVM) %>% 
+  rename(FIPS = GEOID)
+
+# determining NA's
+df_eji = df_eji %>% 
+   filter_at(vars(starts_with("RPL_")), any_vars(!is.na(.)))
+
+#### Brief EDA - no need for graphics since the table illustrates 
+# List of columns to apply quantile calculations
+df_eji %>% select(starts_with("RPL_")) %>% summary()
+
+# List of columns to apply quantile calculations
+columns = df_eji %>% select(starts_with("RPL_")) %>% colnames()
+
+# Apply the quantile function to each column and bind the results
+quantile_results = as.data.frame(lapply(columns, function(col) generate_quantiles(df_eji, col)))
+
+# join the two dataframes together 
+df_eji = cbind(df_eji, quantile_results)
+```
+
+
+## Identification of the Missing Census Tracts 
+
+```{r missing census tracts, echo = FALSE}
+# change character type
+df_svi = df_svi %>% mutate(FIPS = as.character(FIPS))
+df_eji = df_eji %>% mutate(FIPS = as.character(FIPS))
+
+# 12 census tracts appear in the svi but do not appear in the eji
+print("12 Census Tracts that appear in the SVI but do not appear in the EJI")
+anti_join(x = df_svi, y = df_eji, by = c("FIPS")) %>% select(FIPS, LOCATION)
+
+# 6 census tracts appear in the eji but do not appear in the svi
+print("6 Census Tracts that appear in the EJI but do not appear in the SVI")
+anti_join(x = df_eji, y = df_svi, by = c("FIPS")) %>% select(FIPS, Location)
+```
+
+\newpage
+
+# Calculating Kappa Coefficient for Overall Indices Value 
+
+Weighted Cohen's kappa is a measure of the agreement between two ordinarily scaled samples, this is the variable estimate of interest because the samples are ordinal. 
+
+Assumptions for Weighted Cohen's Kappa include:
+
+1. Your data should met the following assumptions for computing weighted kappa.
+2. You have two outcome categorical variables, which should be ordinal
+3. The two outcome variables should have exactly the same categories
+4. You have paired observations; each subject is categorized twice by two independent raters or methods.
+5. The same two raters are used for all participants.
+
+Given the second assumption an inner join must be preformed to ensure that all paired observations have been categorized twice by the two indices. 
+
+Statistical Hypothesis include:
+
+* **Null Hypothesis**: $\kappa = 0$
+* **Alternative Hypothesis**: $\kappa \neq 0$
+
+The following interpretations will be implemented:
+
+* values greater than 0.75 or so may be taken to represent excellent agreement beyond chance,
+* values below 0.40 or so may be taken to represent poor agreement beyond chance, and
+* values between 0.40 and 0.75 may be taken to represent fair to good agreement beyond chance.
+
+Joseph L. Fleiss, Myunghee Cho Paik, Bruce Levin. 2003. Statistical Methods for Rates and Proportions. 3rd ed. John Wiley; Sons, Inc.
+
+```{r kappa, echo = FALSE}
+df = inner_join(x = df_svi, y = df_eji, by = c("FIPS"))
+
+a = cohen.kappa(cbind(df$fourths.x, df$fourths.y)) 
+b = cohen.kappa(cbind(df$fourths.x, df$fourths.y))
+c = cohen.kappa(cbind(df$fifths.x, df$fifths.y))
+d = cohen.kappa(cbind(df$tenths.x, df$tenths.y))
+```
+
+
+|Quantiles| Weighted $\kappa$ (95% CI)  | 
+|---------| --------------------------- |
+|Terciles | `r round(a$confid[2,2], 2)` (`r round(a$confid[2,1], 2)`, `r round(a$confid[2,3], 2)`) |
+|Quartiles| `r round(b$confid[2,2], 2)` (`r round(b$confid[2,1], 2)`, `r round(b$confid[2,3], 2)`) |
+|Quintiles| `r round(c$confid[2,2], 2)` (`r round(c$confid[2,1], 2)`, `r round(c$confid[2,3], 2)`) |
+|Deciles  | `r round(d$confid[2,2], 2)` (`r round(c$confid[2,1], 2)`, `r round(c$confid[2,3], 2)`) |
+
+There is good aggreement across all indices regardless of the quantiles being used. 
+
+\newpage
+
+# Appendix A - Spatial Distribution of Index Values 
+
+```{r spatial prepation, include = FALSE}
+# preparation 
+# utilized to obtain acs data frames, spatial files, and map making
+package_lst = c("tigris", "sf", "tidycensus", "tmap", "ggpubr", "here", "ggokabeito")
+# installing packages
+#lapply(package_lst, install.packages, character.only = TRUE)
+# importing packages 
+lapply(package_lst, library, character.only = TRUE)
+
+# obtaining SPH files for RI tracts
+tracts = tracts(state = "RI", year = 2010, cb = TRUE)
+```
+
+## SVI Maps
+
+```{r svi map, echo = FALSE}
+# removing excess characters to allow for join  
+tracts$GEO_ID = str_remove(tracts$GEO_ID, "^1400000US")
+# joining data 
+svi_map = left_join(tracts, df_svi, by = c("GEO_ID" = "FIPS"))
+
+# making maps 
+ggplot(data = svi_map, aes(fill = RPL_THEMES)) + 
+  geom_sf(lwd = 0.5) + 
+  theme_void() + 
+  labs(title =  "Spatial Distribution of Summary SVI Values, 2022", fill = "Summary SVI Values") +
+  scale_fill_viridis_b()
+```
+
+\newpage
+
+```{r, echo = FALSE}
+a = ggplot(data = svi_map, aes(fill = thirds)) + 
+  geom_sf(lwd = 0.1) + 
+  theme_void() + 
+  labs(title = "Tertiles",
+       fill = "Summary SVI Values") +
+  scale_fill_viridis_d()
+
+b = ggplot(data = svi_map, aes(fill = fourths)) + 
+  geom_sf(lwd = 0.1) + 
+  theme_void() + 
+  labs(title = "Quartiles",
+       fill = "Summary SVI Values") +
+  scale_fill_viridis_d()
+
+c = ggplot(data = svi_map, aes(fill = fifths)) + 
+  geom_sf(lwd = 0.1) + 
+  theme_void() + 
+  labs(title = "Quintiles",
+       fill = "Summary SVI Values") +
+  scale_fill_viridis_d()
+
+d = ggplot(data = svi_map, aes(fill = tenths)) + 
+  geom_sf(lwd = 0.1) + 
+  theme_void() + 
+  labs(title = "Deciles",
+       fill = "Summary SVI Values") +
+  scale_fill_viridis_d()
+  
+  #scale_fill_okabe_ito()
+  #scale_fill_gradient2(low = "#0072B2", mid = "#56B4E9", high = "#E69F00", midpoint=mid) 
+
+plt_svi = ggarrange(a,b,c,d, ncol = 2, nrow = 2)
+annotate_figure(plt_svi, top = text_grob("Quantile Maps of Social Vulnerability Index, 2022", 
+                face = "bold", size = 14))
+```
+
+### Identification of Missing Tracts
+
+```{r, echo = FALSE}
+print("10 Census Tracts that appear in the Census Files but do not appear in the SVI")
+# anti_join(x = tracts, y = df_svi, by = c("GEO_ID" = "FIPS")) %>% as.data.frame() %>% select(GEO_ID) 
+```
+
+
+## EJI Maps
+
+```{r eji map, echo = FALSE}
+# change character type
+df_eji = df_eji %>% mutate(FIPS = as.character(FIPS))
+# removing excess characters to allow for join  
+tracts$GEO_ID = str_remove(tracts$GEO_ID, "^1400000US")
+# joining data 
+eji_map = left_join(tracts, df_eji, by = c("GEO_ID" = "FIPS"))
+
+# making maps 
+ggplot(data = eji_map, aes(fill = RPL_EJI)) + 
+  geom_sf(lwd = 0.5) + 
+  theme_void() + 
+  labs(title =  "Spatial Distribution of Summary SVI Values, 2022", fill = "Summary SVI Values") +
+  scale_fill_viridis_b()
+```
+
+\newpage 
+
+```{r, echo = FALSE}
+a = ggplot(data = eji_map, aes(fill = thirds)) + 
+  geom_sf(lwd = 0.1) + 
+  theme_void() + 
+  labs(title = "Tertiles",
+       fill = "Summary SVI Values") +
+  scale_fill_viridis_d()
+
+b = ggplot(data = eji_map, aes(fill = fourths)) + 
+  geom_sf(lwd = 0.1) + 
+  theme_void() + 
+  labs(title = "Quartiles",
+       fill = "Summary SVI Values") +
+  scale_fill_viridis_d()
+
+c = ggplot(data = eji_map, aes(fill = fifths)) + 
+  geom_sf(lwd = 0.1) + 
+  theme_void() + 
+  labs(title = "Quintiles",
+       fill = "Summary SVI Values") +
+  scale_fill_viridis_d()
+
+d = ggplot(data = eji_map, aes(fill = tenths)) + 
+  geom_sf(lwd = 0.1) + 
+  theme_void() + 
+  labs(title =  "Deciles",
+       fill = "Summary SVI Values") +
+  scale_fill_viridis_d()
+
+plt_eji = ggarrange(a,b,c,d, ncol = 2, nrow = 2)
+annotate_figure(plt_eji, top = text_grob("Quantile Maps of Enviornmental Justice Index, 2022", size = 14))
+```
+
+### Identification of Missing Tracts
+
+```{r, echo = FALSE}
+print("4 Census Tracts that appear in the Census Files but do not appear in the SVI")
+#anti_join(x = tracts, y = df_eji, by = c("GEO_ID" = "FIPS")) %>% as.data.frame() %>% select(GEO_ID)
+```
+
+\newpage
+
+## Distribution of Themes within Each Indices
+
+The SVI contains 4 themes, and the distribution of those themes are shown below. Quantiles of these values will be made available upon request. 
+
+```{r, echo = FALSE}
+a = ggplot(data = svi_map, aes(fill = RPL_THEME1)) + 
+  geom_sf(lwd = 0.1) + 
+  theme_void() + 
+  labs(title =  "Socioeconomic Status", fill = "Summary SVI Values") +
+  scale_fill_viridis_b()
+
+b = ggplot(data = svi_map, aes(fill = RPL_THEME2)) + 
+  geom_sf(lwd = 0.1) + 
+  theme_void() + 
+  labs(title =  "Household Characteristics", fill = "Summary SVI Values") +
+  scale_fill_viridis_b()
+
+c = ggplot(data = svi_map, aes(fill = RPL_THEME1)) + 
+  geom_sf(lwd = 0.1) + 
+  theme_void() + 
+  labs(title =  "Racial & Ethnic Minority Status", fill = "Summary SVI Values") +
+  scale_fill_viridis_b()
+
+d = ggplot(data = svi_map, aes(fill = RPL_THEME2)) + 
+  geom_sf(lwd = 0.1) + 
+  theme_void() + 
+  labs(title =  "Housing Type & Transportation", fill = "Summary SVI Values") +
+  scale_fill_viridis_b()
+
+plt_svi_themes = ggarrange(a,b,c,d, ncol = 2, nrow = 2)
+annotate_figure(plt_svi_themes, top = text_grob("Maps of Social Vulnerability Index Themes, 2022", size = 14))
+```
+
+\newpage
+
+The EJI contains 3 themes, and the distribution of those themes are shown below. Quantiles of these values will be made available upon request. 
+
+```{r, echo = FALSE}
+a = ggplot(data = eji_map, aes(fill = RPL_EBM)) + 
+  geom_sf(lwd = 0.1) + 
+  theme_void() + 
+  labs(title =  "Enviornmental Burden", fill = "Enviornmental Burden Values") +
+  scale_fill_viridis_b()
+
+b = ggplot(data = eji_map, aes(fill = RPL_SVM)) + 
+  geom_sf(lwd = 0.1) + 
+  theme_void() + 
+  labs(title =  "Social Vulnerability", fill = "Social Vulnerabilty Values") +
+  scale_fill_viridis_b()
+
+c = ggplot(data = eji_map, aes(fill = RPL_HVM)) + s
+  labs(title =  "Health Vulnerability", fill = "Health Vulnerability Values") +
+  scale_fill_viridis_b()
+
+plt_eji_themes = ggarrange(a,b,c, ncol = 2, nrow = 2)
+annotate_figure(plt_eji_themes, top = text_grob("Maps of Envivornmental Justice Index Themes, 2022", size = 14))
+```
+
