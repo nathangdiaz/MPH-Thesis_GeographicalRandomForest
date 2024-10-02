@@ -1,116 +1,100 @@
 ---
 title: | 
-    | **Unveiling Vulnerability: Enviornmental Justice Index**
-    | **Data Cleaning and Training Random Forest Models**
+    | **Unveiling Vulnerability: Exploratory Data Analysis for the Enviornmental Justice Index**
+subtitle: |
+    |
+    | Thesis for a Master of Public Health, Epidemiology
 author: |
     | Nathan Garcia-Diaz
+    |
     |
     | Brown University, School of Public Health
 date: |
     |
-    | `r format(Sys.Date(), '%B %d, %Y')`
+    | Last Modified on August 5, 2024
 mainfont: Times New Roman
 fontsize: 11 pt
 output:
   pdf_document:
+    toc: TRUE
     highlight: tango
   latex_engine: luatex
+urlcolor: blue
 include-before:
 - '`\newpage{}`{=latex}'
 ---
 
-```{r preparation, include = FALSE}
-### importing packages
-options(repos = c(CRAN = "https://cran.r-project.org"))
-# define desired packages 
-library(tidyverse)
-library(janitor)
-library(gtools)
-library(corrplot)
-library(ggpubr)
-# spatial tasks
-library(tigris)
-library(sf)
-library(tidycensus)
-library(tmap)
-# random forest 
-library(caret)
-library(randomForest)
-library(SpatialML)
-# splitting data
-library(rsample)
-# parallell processing
-library(foreach)
+\begingroup
+\fontsize{9}{16}\selectfont
+$\\$
+$\\$
+*Note: the table of contents acts as in-document hyperlinks*
+\endgroup
 
+\newpage
 
+# Statement of Purpose
 
+This file is an Exploratory Data Analysis of the Social Vulnerability Index. Given the nature of the data, an examination of the spatial components is required. Specifically, this document will pull from two sources to help with the writing of the code: Ch 7.6 and 7.7 in Analyzing US Census Data: Methods, Maps, and Models in R ([link](https://walker-data.com/census-r/index.html)) and Manny Gimond's A basic introduction to Moran’s I analysis in R ([link](https://mgimond.github.io/simple_moransI_example/#step_1:_define_neighboring_polygons)). 
 
-### loading data 
-eji = read_csv("C:/Users/diazg/OneDrive/Desktop/Thesis/03_Code/a_data/EJI/Rhode Island.csv") %>% 
-  clean_names()
+The EDA includes: distribution of variables, correlation matrix, and LOESS fitted scatter plots. Additionally, the examination of the spatial components include: Moran's I calculation with Monte Carlos Simulation, Moran's Scatterplot, Local Spatial Autocorrelation with Getis-Ord local $G^*_i$, and Hot/Cold Spot Identification. 
 
+Definitions:
+
+* **Moran's I**: Moran's I is a measure of spatial autocorrelation, quantifying the degree to which a variable is similarly distributed across neighboring geographic areas. It ranges from -1 (indicating perfect dispersion) to +1 (indicating perfect clustering), with values around 0 suggesting a random spatial pattern. It is used to detect and measure the presence of spatial autocorrelation, helping analysts understand whether the spatial distribution of a variable is clustered, dispersed, or random.
+* **Monte Carlo Simulations**: Monte Carlo simulation is a computational technique that uses repeated random sampling to estimate the statistical properties of a system. It is used in tandem with Moran's I calculation to assess the significance of observed spatial autocorrelation by comparing it to the distribution of Moran's I values generated under the null hypothesis of spatial randomness. This is preformed as suggested by Gimond.
+* **Moran's Scatter Plot**: Moran's scatterplot is a graphical representation that illustrates the relationship between a variable's values and the spatially lagged values of the same variable, used to visualize spatial autocorrelation. The plot typically includes a 45-degree reference line and divides the data points into four quadrants to help identify patterns of clustering or dispersion. It is used to diagnose and visualize spatial autocorrelation, helping to identify patterns of spatial clustering or dispersion in a dataset.
+* **Local Spatial Autocorrelation**: Local measures of spatial autocorrelation, like the Getis-Ord local $G^*_i$, are used to identify clusters or "hot spots" of similar values within a spatial dataset. The Getis-Ord local $G^*_i$ statistic specifically measures the degree of clustering of high or low values around each point, indicating areas with significant local spatial association.
+    * *Positive Gi Values*: indicate areas where high values of rpl_themes are surrounded by other high values, or low values are surrounded by other low values. This suggests clustering of similar values.
+    * *Negative Gi Values*: Indicate areas where high values of rpl_themes are surrounded by low values, or vice versa. This suggests spatial outliers or contrast.
+
+```{r, include = FALSE}
 knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
 knitr::opts_chunk$set(fig.width=6, fig.height=3.8) 
+options(tigris_use_cache = TRUE)
+options(repos = c(CRAN = "https://cran.r-project.org"))
 ```
 
-# Data Cleaning and Exploratory Data Analysis 
 
-## SVI Cleaning and Feature Engineering 
+```{r preparation, include = FALSE}
+### importing packages
+# define desired packages 
+library(tidyverse)  # general data manipulation
+library(knitr)      # Rmarkdown interactions
+library(here)       # define top level of project folder
+                        # this allows for specification of where 
+                        # things live in relation to the top level
+library(readr)      # imports csv files
+library(corrplot)   # correlation matrix
+library(ggpubr)     # combined graphs
+# spatial tasks
+library(tigris)     # obtain shp files 
+library(spdep)      # exploratory spatial data analysis
 
-The overall summary ranking variable is *RPL_THEMES*, and it will serve as the primary response variable. All **e_** variables will serve as predictor variables, meanwhile, the all **pct_** variables are percentages of the aforementioned variables. The SVI data contains `r length(unique(eji$geoid))` census tracts, however the Census Bureau states that [244 tracts exist](https://www.census.gov/geographies/reference-files/2010/geo/state-local-geo-guides-2010/rhode-island.html#:~:text=Rhode%20Island%20has%20244%20census,groups%2C%20and%2025%2C181%20census%20blocks.).
-
-Below is the output of `str(df)`.
-
-```{r svi cleaning}
-#### Cleaning 
-df_eji = eji %>% 
-  select(geoid, location, rpl_eji,
-         ##### enivornmental burden ##### 
-         # air pollution
-         e_ozone, e_pm, e_dslpm, e_totcr,
-         # toxic sites 
-         e_npl, e_tri, e_tsd, e_rmp, e_coal, e_lead, 
-         # built enviornment 
-         e_park, e_houage, e_wlkind, 
-         # transportation infrastructure
-         e_rail, e_road, e_airprt, 
-         # water pollution 
-         e_impwtr,
-         
-         ##### social vulnerability #####
-         # minority status (racial/ethnic)
-         ep_minrty, 
-         # socioeconomic status
-         ep_pov200, ep_nohsdp, ep_unemp, ep_renter,
-         ep_houbdn, ep_uninsur, ep_noint,
-         # household characteristics
-         ep_age65, ep_age17, ep_disabl, ep_limeng,
-         # housing types
-         ep_groupq, ep_mobile, 
-         
-         ##### social vulnerability #####
-         # chronic disease burden
-         ep_asthma, ep_cancer, ep_bphigh, ep_diabetes, ep_mhlth) %>% 
-  filter_at(vars(rpl_eji), any_vars(. != -999)) %>% 
-  mutate(geoid = as.character(geoid))
+### loading data 
+eji_df = read_csv(here::here("01_Data", "eji_df.csv")) %>% 
+  mutate(geoid = as.character(geoid)) %>% 
+  select(-...1)
 ```
 
-## Distribution of Variables 
+\newpage 
+
+# Distribution of Variables 
 
 This section will produce graphs that contain both non-spatial and spatial distribution of predictor variables.
 
-```{r}
+```{r distribution}
 #### Brief EDA - no need for graphics since the table illustrates 
-columns = df_eji %>% 
+columns = eji_df %>% 
   select(-geoid, -location) %>% 
   colnames()
 
 # Create a for loop to generate histograms for each column
 plot_lst = list()
-plot_lst[["rpl_eji"]] = ggplot(df_eji, aes(rpl_eji)) + geom_histogram() + theme_bw()
+plot_lst[["rpl_eji"]] = ggplot(eji_df, aes(rpl_eji)) + geom_histogram() + theme_bw()
 
 for (col in columns) {
-  p = ggplot(df_eji, aes_string(x = col)) + 
+  p = ggplot(eji_df, aes_string(x = col)) + 
     geom_histogram() + 
     #ggtitle(paste("Histogram of", col)) +
     theme_bw()
@@ -119,14 +103,15 @@ for (col in columns) {
 }
 ```
 
-```{r}
+```{r sptaial distribution}
 # obtaining SPH files for RI tracts
 tracts = tracts(state = "RI", year = 2010, cb = TRUE)
 
 # removing excess characters to allow for join  
 tracts$GEO_ID = str_remove(tracts$GEO_ID, "^1400000US")
+
 # joining data 
-eji_map = left_join(tracts, df_eji, by = c("GEO_ID" = "geoid"))
+eji_map = inner_join(tracts, eji_df, by = c("GEO_ID" = "geoid"))
 
 # making map for primary index 
 a = ggplot(data = eji_map, aes(fill = rpl_eji)) + 
@@ -139,7 +124,7 @@ a = ggplot(data = eji_map, aes(fill = rpl_eji)) +
 plot_lst_sp = list()
 plot_lst_sp[["rpl_eji"]] = a
 
-columns = df_eji %>% 
+columns = eji_df %>% 
   select(-geoid, -location,) %>% 
    colnames()
   
@@ -153,7 +138,7 @@ for (col in columns){
 }
 ```
 
-```{r}
+```{r making combined distribution graphs}
 # overall index variable
 a = ggarrange(plot_lst[["rpl_eji"]], plot_lst_sp[["rpl_eji"]])
 annotate_figure(a, 
@@ -162,12 +147,12 @@ annotate_figure(a,
 ############ Enviornmental Burden
 a = ggarrange(plot_lst[["e_ozone"]], plot_lst_sp[["e_ozone"]])
 annotate_figure(a, 
-                top = text_grob("Distibution of Annual mean days above O3 regulatory standard (3 yr avg)", face = "bold", size = 14),
+                top = text_grob("Distibution of Annual mean days above O3 regulatory standard (3 yr avg)", face = "bold", size = 12),
                 fig.lab = "EPA AQS 2014-2016", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 b = ggarrange(plot_lst[["e_pm"]], plot_lst_sp[["e_pm"]])
 annotate_figure(b, 
-                top = text_grob("Distibution of Annual mean days above PM2.5 regulatory standard (3 yr avg)", face = "bold", size = 14),
+                top = text_grob("Distibution of Annual mean days above PM2.5 regulatory standard (3 yr avg)", face = "bold", size = 10),
                 fig.lab = "EPA AQS 2014-2016", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 c = ggarrange(plot_lst[["e_dslpm"]], plot_lst_sp[["e_dslpm"]])
@@ -177,53 +162,48 @@ annotate_figure(c,
 
 d = ggarrange(plot_lst[["e_totcr"]], plot_lst_sp[["e_totcr"]])
 annotate_figure(d, 
-                top = text_grob("Distibution of Probability of Contracting Cancer (Continuous Exposure)", face = "bold", size = 14),
-                fig.lab = "EPA AQS 2014-2016", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+                top = text_grob("Distibution of Probability of Contracting Cancer (assuming continuous exposure)", face = "bold", size = 10),
+                fig.lab = "EPA AQS 2014-2016", fig.lab.pos = c("bottom.right"), fig.lab.size = 7)
 
 e = ggarrange(plot_lst[["e_npl"]], plot_lst_sp[["e_npl"]])
 annotate_figure(e, 
-                top = text_grob("Distibution of Proportion of Tract's Area within 1-mi buffer of EPA National Priority List Site", face = "bold", size = 12),
+                top = text_grob("Distibution of Proportion of Tract's Area within 1-mi buffer of EPA National Priority List Site", face = "bold", size = 10),
                 fig.lab = "EPA Geospatial Download", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 i = ggarrange(plot_lst[["e_tri"]], plot_lst_sp[["e_tri"]])
 annotate_figure(i, 
-                top = text_grob("Distibution of Proportion of Tract's Area within 1-mi buffer of EPA Toxic Release Inventory Site", face = "bold", size = 11),
+                top = text_grob("Distibution of Proportion of Tract's Area within 1-mi buffer of EPA Toxic Release Inventory Site", face = "bold", size = 8),
                 fig.lab = "EPA Geospatial Download", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 j = ggarrange(plot_lst[["e_tsd"]], plot_lst_sp[["e_tsd"]])
 annotate_figure(j, 
                 top = text_grob("Distibution of Proportion of Tract's Area within 1-mi buffer of EPA Treatment, Storage, and Disposal site", 
-                                face = "bold", size = 10),
-                fig.lab = "EPA Geospatial Download", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+                                face = "bold", size = 8),
+                fig.lab = "EPA Geospatial Download", fig.lab.pos = c("bottom.right"), fig.lab.size = 8)
 
 k = ggarrange(plot_lst[["e_rmp"]], plot_lst_sp[["e_rmp"]])
 annotate_figure(k, 
-                top = text_grob("Distibution of Proportion of Tract's Area within 1-mi buffer of EPA risk management plan site", face = "bold", size = 11),
+                top = text_grob("Distibution of Proportion of Tract's Area within 1-mi buffer of EPA risk management plan site", face = "bold", size = 9),
                 fig.lab = "EPA Geospatial Download", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 l = ggarrange(plot_lst[["e_coal"]], plot_lst_sp[["e_coal"]])
 annotate_figure(l, 
-                top = text_grob("Distibution of Proportion of tract's area within 1-mi buffer of coal mines", face = "bold", size = 14),
+                top = text_grob("Distibution of Proportion of tract's area within 1-mi buffer of coal mines", face = "bold", size = 10),
                 fig.lab = "EPA Geospatial Download", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 m = ggarrange(plot_lst[["e_lead"]], plot_lst_sp[["e_lead"]])
 annotate_figure(m, 
-                top = text_grob("Distibution of Proportion of tract's area within 1-mi buffer of lead mines", face = "bold", size = 14),
+                top = text_grob("Distibution of Proportion of tract's area within 1-mi buffer of lead mines", face = "bold", size = 10),
                 fig.lab = "EPA Geospatial Download", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 n  = ggarrange(plot_lst[["e_park"]], plot_lst_sp[["e_park"]])
 annotate_figure(n, 
-                top = text_grob("Distibution of Proportion of tract's area within 1-mi buffer of green space", face = "bold", size = 14),
+                top = text_grob("Distibution of Proportion of tract's area within 1-mi buffer of green space", face = "bold", size = 10),
                 fig.lab = "2020 TomTom MultiNet Enterpirse Dataset", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
-
-o = ggarrange(plot_lst[["e_park"]], plot_lst_sp[["e_park"]])
-annotate_figure(o, 
-                top = text_grob("Distibution of Percentage of houses built pre 1980 (lead exposure)", face = "bold", size = 14),
-                fig.lab = "EPA Geospatial Download", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 p = ggarrange(plot_lst[["e_houage"]], plot_lst_sp[["e_houage"]])
 annotate_figure(p, 
-                top = text_grob("Distibution of Percentage of houses built pre 1980 (lead exposure)", face = "bold", size = 14),
+                top = text_grob("Distibution of Percentage of houses built pre 1980 (lead exposure)", face = "bold", size = 10),
                 fig.lab = "No Citation", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 q = ggarrange(plot_lst[["e_wlkind"]], plot_lst_sp[["e_wlkind"]])
@@ -238,19 +218,19 @@ annotate_figure(r,
 
 s = ggarrange(plot_lst[["e_road"]], plot_lst_sp[["e_road"]])
 annotate_figure(s, 
-                top = text_grob("Distibution of Proportion of tract's area within 1-mi buffer of high volume road or highway", face = "bold", size = 12),
+                top = text_grob("Distibution of Proportion of tract's area within 1-mi buffer of high volume road or highway", face = "bold", size = 10),
                 fig.lab = "EPA Walkability Inex", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 
 t = ggarrange(plot_lst[["e_airprt"]], plot_lst_sp[["e_airprt"]])
 annotate_figure(t, 
-                top = text_grob("Distibution of Proportion of tract's area within 1-mi buffer of airport", face = "bold", size = 14),
+                top = text_grob("Distibution of Proportion of tract's area within 1-mi buffer of airport", face = "bold", size = 10),
                 fig.lab = "EPA Walkability Inex", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 
 ############ SocioEconomic Status
 u = ggarrange(plot_lst[["ep_minrty"]], plot_lst_sp[["ep_minrty"]])
-annotate_figure(t, 
+annotate_figure(u, 
                 top = text_grob("Distibution of Percentage of Minority Persons", face = "bold", size = 14),
                 fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
@@ -261,16 +241,11 @@ annotate_figure(v,
 
 w = ggarrange(plot_lst[["ep_nohsdp"]], plot_lst_sp[["ep_nohsdp"]])
 annotate_figure(w, 
-                top = text_grob("Distibution of Percentage of Persons with no High School Diploma (age 25+) ", face = "bold", size = 12),
+                top = text_grob("Distibution of Percentage of Persons with no High School Diploma (age 25+) ", face = "bold", size = 10),
                 fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 x = ggarrange(plot_lst[["ep_unemp"]], plot_lst_sp[["ep_unemp"]])
 annotate_figure(x, 
-                top = text_grob("Distibution of Percentage of Unemployed Persons", face = "bold", size = 12),
-                fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
-
-y = ggarrange(plot_lst[["ep_unemp"]], plot_lst_sp[["ep_unemp"]])
-annotate_figure(y, 
                 top = text_grob("Distibution of Percentage of Unemployed Persons", face = "bold", size = 12),
                 fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
@@ -284,7 +259,7 @@ annotate_figure(aa,
                 top = text_grob("Distibution of Percentage of households that make less than $75,000", face = "bold", size = 12),
                 fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
-ab = ggarrange(plot_lst[["ep_houbdn"]], plot_lst_sp[["ep_uninsur"]])
+ab = ggarrange(plot_lst[["ep_uninsur"]], plot_lst_sp[["ep_uninsur"]])
 annotate_figure(ab, 
                 top = text_grob("Distibution of Percentage of Unisured Persons", face = "bold", size = 12),
                 fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
@@ -300,18 +275,18 @@ annotate_figure(ad,
                 fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 ae = ggarrange(plot_lst[["ep_age17"]], plot_lst_sp[["ep_age17"]])
-annotate_figure(ad, 
+annotate_figure(ae, 
                 top = text_grob("Distibution of Percentage of persons aged 17 and younger", face = "bold", size = 12),
                 fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 af = ggarrange(plot_lst[["ep_disabl"]], plot_lst_sp[["ep_disabl"]])
 annotate_figure(af, 
-                top = text_grob("Distibution of Percentage of civilian noninstitutionalized population with a disability", face = "bold", size = 12),
+                top = text_grob("Distibution of Percentage of civilian noninstitutionalized population with a disability", face = "bold", size = 10),
                 fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 ag = ggarrange(plot_lst[["ep_limeng"]], plot_lst_sp[["ep_limeng"]])
 annotate_figure(ag, 
-                top = text_grob("Distibution of Percentage of persons (age 5+) who speak English 'less than well'", face = "bold", size = 12),
+                top = text_grob("Distibution of Percentage of persons (age 5+) who speak English 'less than well'", face = "bold", size = 10),
                 fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 ah = ggarrange(plot_lst[["ep_groupq"]], plot_lst_sp[["ep_groupq"]])
@@ -326,7 +301,7 @@ annotate_figure(ai,
 
 ####### Health Vulnerability 
 aj = ggarrange(plot_lst[["ep_asthma"]], plot_lst_sp[["ep_asthma"]])
-annotate_figure(ai, 
+annotate_figure(aj, 
                 top = text_grob("Distibution of Percentage Individuals With Asthma", face = "bold", size = 12))
                 
 ak = ggarrange(plot_lst[["ep_cancer"]], plot_lst_sp[["ep_cancer"]])
@@ -345,32 +320,35 @@ an = ggarrange(plot_lst[["ep_mhlth"]], plot_lst_sp[["ep_mhlth"]])
 annotate_figure(an, 
                 top = text_grob("Distibution of Percentage Individuals No Reporting Good Mental Health", face = "bold", size = 12))
 ```
+
 \newpage
 
-## Correlation Matrix
+# Correlation Matrix
 
-```{r, fig.height = 7, fig.width = 10}
+The "?" refers to the fact that these variables have a value of zero.
+
+```{r correlation matrix plot, fig.height = 7, fig.width = 10}
 # correlation matrix
-temp = df_eji %>% select(-geoid, -location)
+temp = eji_df %>% select(-geoid, -location)
 temp = cor(temp)
 corrplot(temp, method = "square", type="upper", sig.level = 0.05, insig = "blank")
 ```
 
 \newpage
 
-## Associations Between Response and Predictor Variables 
+# Associations Between Response and Predictor Variables 
 
 The following section illustrates the need for non-linear regression models. The Social Vulnerability Index covers 4 themes: Socioeconomic Status, Household Characteristics, Racial & Ethnic Minority Status, and Housing Type & Transportation Status.
 
-```{r}
+```{r scatter plots and associations}
 lst = list()
 
-columns = df_eji %>% 
+columns = eji_df %>% 
   select(-geoid, -location) %>% 
   colnames()
 
 for (col in columns){
-  p = ggplot(data = df_eji, aes_string(x = col, y = "rpl_eji")) + 
+  p = ggplot(data = eji_df, aes_string(x = col, y = "rpl_eji")) + 
     geom_point() + 
     theme_bw() +
     #labs(title = paste("Scatter plot of", col, "vs. rpl_themes")) +
@@ -412,10 +390,97 @@ theme3 = ggarrange(lst[["ep_asthma"]], lst[["ep_cancer"]], lst[["ep_bphigh"]], l
 annotate_figure(theme3, top = text_grob("Theme: Health Vulnerability", face = "bold", size = 12),
                 fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"))
 ```
+
+ 
+\newpage
+
+# Moran's I Calculation and Scatter Plot 
+
+At $\alpha = 0.05$, all variables are statistically significant. Only one that had a statistic close to zero,the estimated number of persons in group quarters (`e_groupq`). All other variables had higher Moran's I values that what was foud in the SVI. The variables with the top 3 highest moran's i value include the annual mean days above PM2.5 regulatory standard (3 yr avg) (`e_pm`), the probability of Contracting Cancer (assuming continuous exposure) (`e_totcr`), and the ambient concentrations of diesel (PM/m3) (`e_dslpm`). The summary index value remained higher (`rpl_eji`) than what was found for the SVI summary index value. All other statistically significant variables demonstrated weaker presence of spatial autocorrelation, and measures related to coal and mining did were statistically insignificant. 
+
+Additionally, a moran's scatterplot was only preformed for the outcome of interest since creating graphs for all variables would provide redundant information. However, these graphs can be made available upon request. In support with the Moran's I calculation with Monte Carlo Simulations, the scatterplot suggests a positive correlation between the SVI Summary Value and its spatial lag, representative of spatial autocorrelation in the data.
+
+**All examined spatial components suggest that a geographically weighted regression model should be implemented.**
+
+$\\$
+$\\$
+
 ```{r}
-#setwd("/Users/diazg/OneDrive/Desktop/Thesis/03_Code/a_data/EJI")
-#eji_map = st_as_sf(eji_map)
-#st_write(eji_map, "eji_map.shp")
+## define neighbors
+nb_list = poly2nb(eji_map, queen=TRUE)
+## assign weights
+weights = nb2listw(nb_list, style="W", zero.policy=TRUE)
+
+## calculating test statistic - moran's i via monte carlo simulation
+columns = as.data.frame(eji_map) %>% 
+  select(rpl_eji, 
+         starts_with("e_"),
+         starts_with("ep_")) %>% 
+  colnames()
+
+moran_df = tibble(NULL)
+
+## creates calculations for all variables
+for (col in columns){
+  # calculate the moran's object
+  res = moran.mc(pull(eji_map, !!col), 
+                 listw = weights,
+                 nsim = 999, 
+                 zero.policy = TRUE)
+  
+  # use the res object to create a new row in moran_df
+  moran_df = moran_df %>% 
+    bind_rows(tibble(variable = col, 
+                     statistic = res$statistic, 
+                     pvalue = res$p.value))
+}
+
+# creating moran scatter plot 
+moran.plot(x = eji_map$rpl_eji, 
+           listw = weights, 
+           xlab = "EJI Summary Values", 
+           ylab = "Neighbors Standardized EJI Summary Values",
+           main = c("Moran Scatterplot for EJI Summary Values", 
+                    "in Rhode Island, 2022"))
+
+# creating summary table for moran's i values for all variables 
+moran_df = moran_df %>% arrange(desc(statistic))
+knitr::kable(moran_df, caption = c("Moran's I with Monte Carlo Simulations"), 
+             digits = c(0, 3, 3))
 ```
- 
- 
+
+\newpage
+
+# Local Spatial Autocorrelation with $G^*_i$ & Hot/Cold Spot Identification
+
+Both maps illustrate that Providence, Pawtucket, and Woonsocket demonstrate high values of Social Vulnerability. 
+
+```{r}
+# For Gi*, re-compute the weights with `include.self()`
+localg_weights = nb2listw(include.self(nb_list), style="W", zero.policy=TRUE)
+eji_map = eji_map %>% 
+  mutate(localG = as.numeric(localG(eji_map$rpl_eji, localg_weights)))
+
+# Local spatial autocorrelation
+localg = ggplot(eji_map, aes(fill = localG)) + 
+  geom_sf() +
+  scale_fill_distiller(palette = "RdYlBu") + 
+  theme_void() + 
+  labs(fill = "Local Gi*")
+
+# hotspot identification
+eji_map = eji_map %>%
+  mutate(Hot_Spot = case_when(
+    localG >= 2.576 ~ "High",
+    localG <= -2.576 ~ "Low",
+    TRUE ~ "Not Sign."
+  ))
+
+spots_map = ggplot(eji_map, aes(fill = Hot_Spot), color = "grey90", size = 0.001) + 
+  geom_sf() + 
+  scale_fill_manual(values = c("red", "blue", "grey")) + 
+  theme_void() + labs(fill = "Hot Spot")
+
+ggarrange(localg, spots_map)
+
+```

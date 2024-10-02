@@ -1,6 +1,6 @@
 ---
 title: | 
-    | **Model Creation: Social Vulnerability Index**
+    | **Model Creation: Enviornmental Justice Index**
     | **Training Random Forest and Geographically Weighted Random Forest Models**
 subtitle: |
     | Thesis for a Master of Public Health, Epidemiology
@@ -86,18 +86,19 @@ library(ggpubr)       # arrange multiple graphs
 set.seed(926) 
 
 ### loading data 
-svi_df = read_csv(here::here("01_Data", "svi_df.csv")) %>% 
-  mutate(fips = as.character(fips)) %>% 
+eji_df = read_csv(here::here("01_Data", "eji_df.csv")) %>% 
+  mutate(geoid = as.character(geoid)) %>% 
   select(-...1)
 
 ### obtaining SPH files for RI tracts
-tracts = tracts(state = "RI", year = 2022, cb = TRUE)
-
+tracts = tracts(state = "RI", year = 2010, cb = TRUE)
+# removing excess characters to allow for join  
+tracts$GEO_ID = str_remove(tracts$GEO_ID, "^1400000US")
 ### joining data 
-svi_df = inner_join(tracts, svi_df, by = c("GEOID" = "fips"))
+eji_df = inner_join(tracts, eji_df, by = c("GEO_ID" = "geoid"))
 
 ### defining analytical coordinates and df 
-df_coords = svi_df %>% 
+df_coords = eji_df %>% 
   mutate(
     # redefines geometry to be the centroid of the polygon
     geometry = st_centroid(geometry),
@@ -110,9 +111,9 @@ df_coords = svi_df %>%
   select(lon, lat)
 
 # only obtain response and predictor variables 
-df = svi_df %>% 
+df = eji_df %>% 
   st_drop_geometry() %>% 
-  select(rpl_themes, starts_with("e_")) 
+  select(rpl_eji , starts_with("e_"), starts_with("ep_")) 
 ```
 
 # Traditional Random Forest Model
@@ -130,16 +131,16 @@ Models will be created and compared at the end of the section.
 set.seed(926)
 
 # obtain the number of predictors
-pred_num = svi_df %>% 
+pred_num = eji_df %>% 
   st_drop_geometry() %>% 
-  select(starts_with("e_")) %>% 
+  select(starts_with("e_"), starts_with("ep_")) %>% 
   colnames() %>% 
   length()
 # determine the default number of predictors
 mtry = round(pred_num / 3)
 
 # creating the first model
-rf_mod1 = train(rpl_themes ~., 
+rf_mod1 = train(rpl_eji ~., 
                  data = df, 
                  method = "rf", 
                  trControl = trainControl(method = "cv", number = 10), 
@@ -165,10 +166,10 @@ results_list = vector("list", 10)
 # Loop to repeat the code 10 times
 for (i in 1:10) {
   # Train the random forest model with 10-fold cross-validation
-  rf_mod2 = train(rpl_themes ~ ., data = df, method = "rf", 
+  rf_mod2 = train(rpl_eji ~ ., data = df, method = "rf", 
                   ntree = 500, # Start with a default number of trees
                   trControl = trainControl(method = "cv", number = 10),
-                  tuneGrid = expand.grid(mtry = c(3:8)))
+                  tuneGrid = expand.grid(mtry = c(9:15)))
   
   # print model results 
   # print(rf_mod2)
@@ -188,7 +189,7 @@ store_maxtrees = list()
 ntree_values = c(250, 300, 350, 400, 450, 500, 550, 600, 800, 1000) # List of `ntree` values to test
 
 for (ntree in ntree_values) {
-    rf_maxtrees = train(rpl_themes ~ ., data = df, method = "rf",
+    rf_maxtrees = train(rpl_eji ~ ., data = df, method = "rf",
                         tuneGrid = expand.grid(mtry = mean_mtry), # Use the fixed best `mtry`
                         trControl = trainControl(method = "cv", number = 10),
                         ntree = ntree)
@@ -202,12 +203,12 @@ for (ntree in ntree_values) {
 # summary(resamples(store_maxtrees))
 
 # creating the first model
-rf_mod2 = train(rpl_themes ~., 
+rf_mod2 = train(rpl_eji ~., 
                  data = df, 
                  method = "rf", 
                  trControl = trainControl(method = "cv", number = 10), 
                  tuneGrid = expand.grid(mtry = mean_mtry), 
-                 ntree = 300, 
+                 ntree = 800, 
                  importance = TRUE)
 
 # Print the results
@@ -306,7 +307,7 @@ customRF$sort <- function(x) x[order(x[,1]),]
 customRF$levels <- function(x) x$classes
 
 # creating the first model
-rf_mod3 = train(rpl_themes ~., 
+rf_mod3 = train(rpl_eji ~., 
                  data = df, 
                  method = customRF, 
                  trControl = ctrl, 
@@ -384,7 +385,7 @@ vntree = c(51, 101, 501, 1001, 1501)
 
 # specify the predictor (x) and outcome (y) object
 x = df %>% select(starts_with("e_")) %>% st_drop_geometry()
-y = df %>% pull(rpl_themes)
+y = df %>% pull(rpl_eji)
 
 # Create a function to get random forest error information for different mtry values 
 tune = function(x, y, ntree = vntree, mtry = NULL, keep.forest = FALSE, ...) {
@@ -431,7 +432,7 @@ best_mtry = temp$mtry[[1]]
 best_ntree = temp$ntree[[1]]
 
 # creating the first model
-rf_mod4 = train(rpl_themes ~., 
+rf_mod4 = train(rpl_eji ~., 
                  data = df, 
                  method = "rf", 
                  trControl = trainControl(method = "cv", number = 10), 
@@ -485,14 +486,18 @@ kable(results_rf, caption = "Performance Metrics for Each Model",
 
 ## GWRF Model 1
 
-This model has hyperparameters defined with mtry and trees by the default: *bandwith* = 49, trees = 500 and mtry = 5.
+This model has hyperparameters defined with mtry and trees by the default, and optimized bandwith.
 
 ```{r gwrf mod 1}
 # testing for optimal bandwidth
-temp = SpatialML::grf.bw(rpl_themes ~ e_pov150 + e_unemp + e_hburd + e_nohsdp + 
-                               e_uninsur + e_age65 + e_age17 + e_disabl + 
-                               e_sngpnt + e_limeng + e_minrty + e_munit +
-                               e_mobile + e_crowd + e_noveh + e_groupq, 
+temp = SpatialML::grf.bw(rpl_eji ~ e_ozone + e_pm + e_dslpm + e_totcr +
+                           e_npl + e_tri + e_tsd + e_rmp + e_coal + e_lead + 
+                           e_park + e_houage + e_wlkind + e_rail + e_road + e_airprt + 
+                           e_impwtr + ep_minrty + ep_pov200 + ep_nohsdp + 
+                           ep_unemp + ep_renter + ep_houbdn + ep_uninsur + 
+                           ep_noint + ep_age65 + ep_age17 + ep_disabl +
+                           ep_limeng + ep_mobile + ep_groupq + ep_bphigh + 
+                           ep_asthma + ep_cancer + ep_mhlth + ep_diabetes, 
                              dataset = df, 
                              kernel = "adaptive",
                              bw.min = 20,
@@ -504,10 +509,14 @@ temp = SpatialML::grf.bw(rpl_themes ~ e_pov150 + e_unemp + e_hburd + e_nohsdp +
 best.bw_gwrf_mod1 = temp$Best.BW
 
 # defining the spatial model with prior model hyparameters
-gwrf_mod1 = SpatialML::grf(rpl_themes ~ e_pov150 + e_unemp + e_hburd + e_nohsdp + 
-                           e_uninsur + e_age65 + e_age17 + e_disabl + 
-                           e_sngpnt + e_limeng + e_minrty + e_munit +
-                           e_mobile + e_crowd + e_noveh + e_groupq,
+gwrf_mod1 = SpatialML::grf(rpl_eji ~ e_ozone + e_pm + e_dslpm + e_totcr +
+                           e_npl + e_tri + e_tsd + e_rmp + e_coal + e_lead + 
+                           e_park + e_houage + e_wlkind + e_rail + e_road + e_airprt + 
+                           e_impwtr + ep_minrty + ep_pov200 + ep_nohsdp + 
+                           ep_unemp + ep_renter + ep_houbdn + ep_uninsur + 
+                           ep_noint + ep_age65 + ep_age17 + ep_disabl +
+                           ep_limeng + ep_mobile + ep_groupq + ep_bphigh + 
+                           ep_asthma + ep_cancer + ep_mhlth + ep_diabetes,
                          dframe = df, 
                          kernel = "adaptive",
                          coords = df_coords,
@@ -526,36 +535,40 @@ This model contains the hyperparameters defined in the RF building section: *ban
 
 ```{r gwrf mod 2}
 # testing for optimal bandwidth
-temp = SpatialML::grf.bw(rpl_themes ~ e_pov150 + e_unemp + e_hburd + e_nohsdp + 
-                               e_uninsur + e_age65 + e_age17 + e_disabl + 
-                               e_sngpnt + e_limeng + e_minrty + e_munit +
-                               e_mobile + e_crowd + e_noveh + e_groupq, 
+temp = SpatialML::grf.bw(rpl_eji ~ e_ozone + e_pm + e_dslpm + e_totcr +
+                           e_npl + e_tri + e_tsd + e_rmp + e_coal + e_lead + 
+                           e_park + e_houage + e_wlkind + e_rail + e_road + e_airprt + 
+                           e_impwtr + ep_minrty + ep_pov200 + ep_nohsdp + 
+                           ep_unemp + ep_renter + ep_houbdn + ep_uninsur + 
+                           ep_noint + ep_age65 + ep_age17 + ep_disabl +
+                           ep_limeng + ep_mobile + ep_groupq + ep_bphigh + 
+                           ep_asthma + ep_cancer + ep_mhlth + ep_diabetes, 
                              dataset = df, 
                              kernel = "adaptive",
                              bw.min = 20,
                              bw.max = 50,
                              coords = df_coords,
-                             trees = best_ntree, 
-                             mtry = rf_mod4$results$mtry, 
+                             trees = rf_mod3$finalModel$ntree, 
+                             mtry = rf_mod3$finalModel$mtry, 
                              step = 1)
 
 best.bw_gwrf_mod2 = temp$Best.BW
 
 # defining the spatial model with prior model hyparameters
-gwrf_mod2 = SpatialML::grf(rpl_themes ~ e_pov150 + e_unemp + e_hburd + e_nohsdp + 
-                           e_uninsur + e_age65 + e_age17 + e_disabl + 
-                           e_sngpnt + e_limeng + e_minrty + e_munit +
-                           e_mobile + e_crowd + e_noveh + e_groupq,
+gwrf_mod2 = SpatialML::grf(rpl_eji ~ e_ozone + e_pm + e_dslpm + e_totcr +
+                           e_npl + e_tri + e_tsd + e_rmp + e_coal + e_lead + 
+                           e_park + e_houage + e_wlkind + e_rail + e_road + e_airprt + 
+                           e_impwtr + ep_minrty + ep_pov200 + ep_nohsdp + 
+                           ep_unemp + ep_renter + ep_houbdn + ep_uninsur + 
+                           ep_noint + ep_age65 + ep_age17 + ep_disabl +
+                           ep_limeng + ep_mobile + ep_groupq + ep_bphigh + 
+                           ep_asthma + ep_cancer + ep_mhlth + ep_diabetes,
                          dframe = df, 
                          kernel = "adaptive", 
                          coords = df_coords,
                          bw = best.bw_gwrf_mod2,
-                         ntree = best_ntree, 
-                         mtry = rf_mod4$results$mtry, 
-                         importance.mode = "impurity") # this is a ranger argument
-                                                       # specification of this value 
-                                                       # corrected errors that previously appeared
-                                                       # no importance value specified
+                         ntree = rf_mod3$finalModel$ntree, 
+                         mtry = rf_mod3$finalModel$mtry) 
 ```
 
 
@@ -568,17 +581,17 @@ The models both preform nearly identically because the hyperparameters preform n
 ```{r}
 # Model 5
 predictions5 = gwrf_mod1$Global.Model$predictions
-mse5 = mean((df$rpl_themes - predictions5)^2)
+mse5 = mean((df$rpl_eji - predictions5)^2)
 rmse5 = sqrt(mse5)
-mae5 = sum(abs(df$rpl_themes - predictions5))/length(predictions5)
-r_squared5 = 1 - sum((df$rpl_themes - predictions5)^2) / sum((df$rpl_themes - mean(df$rpl_themes))^2)
+mae5 = sum(abs(df$rpl_eji - predictions5))/length(predictions5)
+r_squared5 = 1 - sum((df$rpl_eji - predictions5)^2) / sum((df$rpl_eji - mean(df$rpl_eji))^2)
 
 # Model 6
 predictions6 = gwrf_mod2$Global.Model$predictions
-mse6 = mean((df$rpl_themes - predictions6)^2)
+mse6 = mean((df$rpl_eji - predictions6)^2)
 rmse6 = sqrt(mse6)
-mae6 = sum(abs(df$rpl_themes - predictions6))/length(predictions6)
-r_squared6 = 1 - sum((df$rpl_themes - predictions6)^2) / sum((df$rpl_themes - mean(df$rpl_themes))^2)
+mae6 = sum(abs(df$rpl_eji - predictions6))/length(predictions6)
+r_squared6 = 1 - sum((df$rpl_eji - predictions6)^2) / sum((df$rpl_eji - mean(df$rpl_eji))^2)
 
 # Create a data frame with the results
 results_grf = data.frame(
@@ -625,7 +638,7 @@ df = df %>%
   mutate(rf_pred = as.data.frame(rf_mod4$finalModel$predicted)[[1]])
 
 # Predicted 1:1 Plot
-ggplot(df, aes(x = rf_pred, y = rpl_themes)) +
+ggplot(df, aes(x = rf_pred, y = rpl_eji)) +
   geom_point() + 
   theme_bw() + 
   geom_abline(slope=1, intercept=0,linetype="dashed",size=0.5) + 
@@ -647,10 +660,10 @@ ggplot(temp, aes(x = fct_reorder(Variable, IncMSE), y = IncMSE)) +
   theme_bw()
 
 # Generate Partial Dependence Plots and store them as ggplot objects
-a = as.data.frame(randomForest::partialPlot(rf_mod4$finalModel, df, e_limeng, plot = FALSE))
-b = as.data.frame(randomForest::partialPlot(rf_mod4$finalModel, df, e_pov150, plot = FALSE))
-c = as.data.frame(randomForest::partialPlot(rf_mod4$finalModel, df, e_noveh, plot = FALSE))
-d = as.data.frame(randomForest::partialPlot(rf_mod4$finalModel, df, e_munit, plot = FALSE))
+a = as.data.frame(randomForest::partialPlot(rf_mod3$finalModel, df, ep_diabetes, plot = FALSE))
+b = as.data.frame(randomForest::partialPlot(rf_mod4$finalModel, df, e_tri, plot = FALSE))
+c = as.data.frame(randomForest::partialPlot(rf_mod4$finalModel, df, e_totcr, plot = FALSE))
+d = as.data.frame(randomForest::partialPlot(rf_mod4$finalModel, df, ep_pov200, plot = FALSE))
 
 # Convert the base R plots to ggplot objects
 plot_a <- ggplot(a, aes(x, y)) + geom_line() + labs(title = "Partial Dependence of e_limeng")
@@ -670,29 +683,29 @@ To remedy this situation, I propose changing the analytically plan such that the
 
 ```{r grf predicted results}
 # Spatial Distribution of Prediction and Observation Summary Index Values
-svi_df = svi_df %>% 
+eji_df = eji_df %>% 
   mutate(grf_pred = gwrf_mod1$Global.Model$predictions)
 
 # Predicted 1:1 Plot
-ggplot(svi_df, aes(x = grf_pred, y = rpl_themes)) +
+ggplot(eji_df, aes(x = grf_pred, y = rpl_eji)) +
   geom_point() + 
   theme_bw() + 
   geom_abline(slope=1, intercept=0,linetype="dashed",size=0.5) + 
   geom_smooth(method = "lm", se = FALSE, colour="black",size=0.5) + 
   labs(x="Observed", y = "Predicted")
 
-a = ggplot(svi_df, aes(fill = rpl_themes)) +
+a = ggplot(eji_df, aes(fill = rpl_eji)) +
   geom_sf() + 
   theme_void() +
   scale_fill_viridis_c() + 
-  labs(title = "Observed SVI Values") +
+  labs(title = "Observed EJI Values") +
   theme(legend.title=element_blank())
 
-b = ggplot(svi_df, aes(fill = grf_pred)) +
+b = ggplot(eji_df, aes(fill = grf_pred)) +
   geom_sf() + 
   theme_void() +
   scale_fill_viridis_c() + 
-  labs(title = "Predicted SVI Values") + 
+  labs(title = "Predicted EJI Values") + 
   theme(legend.title=element_blank())
 
 ggarrange(a,b, ncol = 2, common.legend = TRUE, legend="bottom")
@@ -720,10 +733,10 @@ plot_lst = list()
 for (var_name in variable_names) {
   
   # Generate the map using ggplot2
-  p <- ggplot(svi_df, aes_string(fill = var_name)) +
+  p <- ggplot(eji_df, aes_string(fill = var_name)) +
     geom_sf() +
     scale_fill_viridis_c() +
-    labs(title = paste("Map of Local Variable Importance:", var_name),
+    labs(title =  var_name,
          fill = "Importance") +
     theme_void()
   
@@ -731,18 +744,23 @@ for (var_name in variable_names) {
   plot_lst[[var_name]] = p
 }
 
-############ SocioEconomic Status
-ggarrange(plot_lst[["e_pov150"]], plot_lst[["e_unemp"]])
-ggarrange(plot_lst[["e_hburd"]], plot_lst[["e_nohsdp"]])
-plot_lst[["e_uninsur"]]
-################ Household Characteristics 
-ggarrange(plot_lst[["e_age65"]], plot_lst[["e_age17"]])
-ggarrange(plot_lst[["e_disabl"]], plot_lst[["e_sngpnt"]])
-plot_lst[["e_limeng"]]
-################# Racial & Ethnic Minority Status
-plot_lst[["e_minrty"]]
-################# Housing Type & Transportation 
-ggarrange(plot_lst[["e_munit"]], plot_lst[["e_mobile"]])
-ggarrange(plot_lst[["e_crowd"]], plot_lst[["e_noveh"]])
-plot_lst[["e_groupq"]]
+ggarrange(plot_lst[["e_ozone"]], plot_lst[["e_pm"]])
+ggarrange(plot_lst[["e_dslpm"]], plot_lst[["e_totcr"]])
+ggarrange(plot_lst[["e_npl"]], plot_lst[["e_tri"]])
+ggarrange(plot_lst[["e_tsd"]], plot_lst[["e_rmp"]])
+ggarrange(plot_lst[["e_coal"]], plot_lst[["e_lead"]])
+ggarrange(plot_lst[["e_park"]], plot_lst[["e_houage"]])
+ggarrange(plot_lst[["e_wlkind"]], plot_lst[["e_rail"]])
+ggarrange(plot_lst[["e_road"]], plot_lst[["e_airprt"]])
+ggarrange(plot_lst[["e_impwtr"]], plot_lst[["ep_minrty"]])
+ggarrange(plot_lst[["ep_pov200"]], plot_lst[["ep_nohsdp"]])
+ggarrange(plot_lst[["ep_unemp"]], plot_lst[["ep_renter"]])
+ggarrange(plot_lst[["ep_houbdn"]], plot_lst[["ep_uninsur"]])
+ggarrange(plot_lst[["ep_noint"]], plot_lst[["ep_age65"]])
+ggarrange(plot_lst[["ep_age17"]], plot_lst[["ep_disabl"]])
+ggarrange(plot_lst[["ep_limeng"]], plot_lst[["ep_mobile"]])
+ggarrange(plot_lst[["ep_groupq"]], plot_lst[["ep_bphigh"]])
+ggarrange(plot_lst[["ep_asthma"]], plot_lst[["ep_cancer"]])
+ggarrange(plot_lst[["ep_mhlth"]], plot_lst[["ep_diabetes"]])
+
 ```

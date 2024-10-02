@@ -1,27 +1,36 @@
 ---
 title: | 
     | **Assessing Relative Agreement in Ranking Rhode Island Census Tracts Across the Social Vulernability Index and the Enviornmental Justice Index**
+subtitle: |
+    |
+    | Thesis for a Master of Public Health, Epidemiology
 author: |
     | Nathan Garcia-Diaz
     |
-    | Advisor: William Goedel, PhD
     |
     | Brown University, School of Public Health
 date: |
     |
-    | `r format(Sys.Date(), '%B %d, %Y')`
+    | Last Modified on August 3, 2024
 mainfont: Times New Roman
 fontsize: 11 pt
-output:
+output: 
   pdf_document:
-    highlight: tango
-    fig_width: 7
-    fig_height: 6
-    toc: true
-  latex_engine: luatex
+    toc: TRUE
+  latex_engine: lualatex
+urlcolor: blue
 include-before:
 - '`\newpage{}`{=latex}'
 ---
+
+\begingroup
+\fontsize{9}{16}\selectfont
+$\\$
+$\\$
+*Note: the table of contents acts as in-document hyperlinks*
+\endgroup
+
+\newpage
 
 # Purpose Statement 
 
@@ -34,14 +43,22 @@ In the first half of the document, all indices will be cleaned, and feature engi
 ```{r preparation, include = FALSE}
 ### importing packages
 options(repos = c(CRAN = "https://cran.r-project.org"))
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
 # define desired packages 
-library(tidyverse)
+library(tidyverse)  # general data manipulation
+library(here)       # define top level of project folder
+                        # this allows for specification of where 
+                        # things live in relation to the top level
 library(gtools)
 library(psych)
+library(ggpubr)
+# spatial tasks
+library(tigris)     # obtain shp files 
 
 ### loading data 
-svi = read_csv("C:/Users/diazg/OneDrive/Desktop/Thesis/03_Code/a_data/clean_data/SVI/RhodeIsland.csv")
-eji = read_csv("C:/Users/diazg/OneDrive/Desktop/Thesis/03_Code/a_data/clean_data/EJI/Rhode Island.csv")
+svi = read_csv(here::here("01_Data", "SVI_RI_Data.csv"))
+eji = read_csv(here::here("01_Data", "EJI_RI_Data.csv"))
 ```
 
 # Cleaning Indices and Feature Engineering Quantiles
@@ -115,6 +132,8 @@ df_eji = cbind(df_eji, quantile_results)
 
 ## Identification of the Missing Census Tracts 
 
+The missing census tracts stem from the indices using two different sets of FIPS codes, hence different both census use different spatial definitions. This is evident by the fact that the two maps of the summary index values found in Appendix A. The EJI uses 2010 FIPS codes, while the SVI uses 2022 FIPS codes. Even though the visual difference between the two indices occurs from the larger EJI tracts contains two smaller current SVI tracts, the smaller SVI summary values cannot be combined because they represent percentile ranks. Attempts to combine and calculate weighted Cohen's kappa would lead to incorrect or inaccurate results.
+
 ```{r missing census tracts, echo = FALSE}
 # change character type
 df_svi = df_svi %>% mutate(FIPS = as.character(FIPS))
@@ -182,29 +201,19 @@ There is good aggreement across all indices regardless of the quantiles being us
 # Appendix A - Spatial Distribution of Index Values 
 
 ```{r spatial prepation, include = FALSE}
-# preparation 
-# utilized to obtain acs data frames, spatial files, and map making
-package_lst = c("tigris", "sf", "tidycensus", "tmap", "ggpubr", "here", "ggokabeito")
-# installing packages
-#lapply(package_lst, install.packages, character.only = TRUE)
-# importing packages 
-lapply(package_lst, library, character.only = TRUE)
-
 # obtaining SPH files for RI tracts
-tracts = tracts(state = "RI", year = 2010, cb = TRUE)
+tracts = tracts(state = "RI", year = 2022, cb = TRUE)
 ```
 
 ## SVI Maps
 
 ```{r svi map, echo = FALSE}
-# removing excess characters to allow for join  
-tracts$GEO_ID = str_remove(tracts$GEO_ID, "^1400000US")
 # joining data 
-svi_map = left_join(tracts, df_svi, by = c("GEO_ID" = "FIPS"))
+svi_map = left_join(tracts, df_svi, by = c("GEOID" = "FIPS"))
 
 # making maps 
 ggplot(data = svi_map, aes(fill = RPL_THEMES)) + 
-  geom_sf(lwd = 0.5) + 
+  geom_sf(lwd = 0.01) + 
   theme_void() + 
   labs(title =  "Spatial Distribution of Summary SVI Values, 2022", fill = "Summary SVI Values") +
   scale_fill_viridis_b()
@@ -217,28 +226,28 @@ a = ggplot(data = svi_map, aes(fill = thirds)) +
   geom_sf(lwd = 0.1) + 
   theme_void() + 
   labs(title = "Tertiles",
-       fill = "Summary SVI Values") +
+       fill = "Summary Values") +
   scale_fill_viridis_d()
 
 b = ggplot(data = svi_map, aes(fill = fourths)) + 
   geom_sf(lwd = 0.1) + 
   theme_void() + 
   labs(title = "Quartiles",
-       fill = "Summary SVI Values") +
+       fill = "Summary Values") +
   scale_fill_viridis_d()
 
 c = ggplot(data = svi_map, aes(fill = fifths)) + 
   geom_sf(lwd = 0.1) + 
   theme_void() + 
   labs(title = "Quintiles",
-       fill = "Summary SVI Values") +
+       fill = "Summary Values") +
   scale_fill_viridis_d()
 
 d = ggplot(data = svi_map, aes(fill = tenths)) + 
   geom_sf(lwd = 0.1) + 
   theme_void() + 
   labs(title = "Deciles",
-       fill = "Summary SVI Values") +
+       fill = "Summary Values") +
   scale_fill_viridis_d()
   
   #scale_fill_okabe_ito()
@@ -248,28 +257,27 @@ plt_svi = ggarrange(a,b,c,d, ncol = 2, nrow = 2)
 annotate_figure(plt_svi, top = text_grob("Quantile Maps of Social Vulnerability Index, 2022", 
                 face = "bold", size = 14))
 ```
-
-### Identification of Missing Tracts
-
-```{r, echo = FALSE}
-print("10 Census Tracts that appear in the Census Files but do not appear in the SVI")
-# anti_join(x = tracts, y = df_svi, by = c("GEO_ID" = "FIPS")) %>% as.data.frame() %>% select(GEO_ID) 
-```
-
+\newpage 
 
 ## EJI Maps
+
+```{r, include = FALSE}
+# obtaining SPH files for RI tracts
+tracts = tracts(state = "RI", year = 2010, cb = TRUE)
+
+# removing excess characters to allow for join  
+tracts$GEO_ID = str_remove(tracts$GEO_ID, "^1400000US")
+```
 
 ```{r eji map, echo = FALSE}
 # change character type
 df_eji = df_eji %>% mutate(FIPS = as.character(FIPS))
-# removing excess characters to allow for join  
-tracts$GEO_ID = str_remove(tracts$GEO_ID, "^1400000US")
 # joining data 
 eji_map = left_join(tracts, df_eji, by = c("GEO_ID" = "FIPS"))
 
 # making maps 
 ggplot(data = eji_map, aes(fill = RPL_EJI)) + 
-  geom_sf(lwd = 0.5) + 
+  geom_sf(lwd = 0.01) + 
   theme_void() + 
   labs(title =  "Spatial Distribution of Summary SVI Values, 2022", fill = "Summary SVI Values") +
   scale_fill_viridis_b()
@@ -282,39 +290,32 @@ a = ggplot(data = eji_map, aes(fill = thirds)) +
   geom_sf(lwd = 0.1) + 
   theme_void() + 
   labs(title = "Tertiles",
-       fill = "Summary SVI Values") +
+       fill = "Summary Values") +
   scale_fill_viridis_d()
 
 b = ggplot(data = eji_map, aes(fill = fourths)) + 
   geom_sf(lwd = 0.1) + 
   theme_void() + 
   labs(title = "Quartiles",
-       fill = "Summary SVI Values") +
+       fill = "Summary Values") +
   scale_fill_viridis_d()
 
 c = ggplot(data = eji_map, aes(fill = fifths)) + 
   geom_sf(lwd = 0.1) + 
   theme_void() + 
   labs(title = "Quintiles",
-       fill = "Summary SVI Values") +
+       fill = "Summary Values") +
   scale_fill_viridis_d()
 
 d = ggplot(data = eji_map, aes(fill = tenths)) + 
   geom_sf(lwd = 0.1) + 
   theme_void() + 
   labs(title =  "Deciles",
-       fill = "Summary SVI Values") +
+       fill = "Summary Values") +
   scale_fill_viridis_d()
 
 plt_eji = ggarrange(a,b,c,d, ncol = 2, nrow = 2)
 annotate_figure(plt_eji, top = text_grob("Quantile Maps of Enviornmental Justice Index, 2022", size = 14))
-```
-
-### Identification of Missing Tracts
-
-```{r, echo = FALSE}
-print("4 Census Tracts that appear in the Census Files but do not appear in the SVI")
-#anti_join(x = tracts, y = df_eji, by = c("GEO_ID" = "FIPS")) %>% as.data.frame() %>% select(GEO_ID)
 ```
 
 \newpage
@@ -369,7 +370,9 @@ b = ggplot(data = eji_map, aes(fill = RPL_SVM)) +
   labs(title =  "Social Vulnerability", fill = "Social Vulnerabilty Values") +
   scale_fill_viridis_b()
 
-c = ggplot(data = eji_map, aes(fill = RPL_HVM)) + s
+c = ggplot(data = eji_map, aes(fill = RPL_HVM)) + 
+  geom_sf(lwd = 0.1) + 
+  theme_void() +
   labs(title =  "Health Vulnerability", fill = "Health Vulnerability Values") +
   scale_fill_viridis_b()
 

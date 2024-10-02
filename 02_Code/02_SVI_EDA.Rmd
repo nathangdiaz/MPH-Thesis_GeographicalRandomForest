@@ -1,94 +1,100 @@
 ---
 title: | 
-    | **Unveiling Vulnerability: Social Vulnerability Index**
-    | **Data Cleaning and Exploratory Data Analysis**
+    | **Unveiling Vulnerability: Exploratory Data Analysis for the Social Vulnerability Index**
+subtitle: |
+    |
+    | Thesis for a Master of Public Health, Epidemiology
 author: |
     | Nathan Garcia-Diaz
+    |
     |
     | Brown University, School of Public Health
 date: |
     |
-    | `r format(Sys.Date(), '%B %d, %Y')`
+    | Last Modified on August 5, 2024
 mainfont: Times New Roman
 fontsize: 11 pt
 output:
   pdf_document:
+    toc: TRUE
     highlight: tango
   latex_engine: luatex
+urlcolor: blue
 include-before:
 - '`\newpage{}`{=latex}'
 ---
 
-```{r preparation, include = FALSE}
-### importing packages
-options(repos = c(CRAN = "https://cran.r-project.org"))
-# define desired packages 
-library(tidyverse)
-library(janitor)
-library(gtools)
-library(corrplot)
-library(ggpubr)
-# spatial tasks
-library(tigris)
-library(sf)
-library(tidycensus)
-library(tmap)
-# random forest 
-library(caret)
-library(randomForest)
-library(SpatialML)
-# splitting data
-library(rsample)
-# parallell processing
-library(foreach)
+\begingroup
+\fontsize{9}{16}\selectfont
+$\\$
+$\\$
+*Note: the table of contents acts as in-document hyperlinks*
+\endgroup
 
-### loading data 
-svi = read_csv("C:/Users/diazg/OneDrive/Desktop/Thesis/03_Code/a_data/SVI/RhodeIsland.csv") %>% 
-  clean_names()
+\newpage
 
+# Statement of Purpose
+
+This file is an Exploratory Data Analysis of the Social Vulnerability Index. Given the nature of the data, an examination of the spatial components is required. Specifically, this document will pull from two sources to help with the writing of the code: Ch 7.6 and 7.7 in Analyzing US Census Data: Methods, Maps, and Models in R ([link](https://walker-data.com/census-r/index.html)) and Manny Gimond's A basic introduction to Moran’s I analysis in R ([link](https://mgimond.github.io/simple_moransI_example/#step_1:_define_neighboring_polygons)). 
+
+The EDA includes: distribution of variables, correlation matrix, and LOESS fitted scatter plots. Additionally, the examination of the spatial components include: Moran's I calculation with Monte Carlos Simulation, Moran's Scatterplot, Local Spatial Autocorrelation with Getis-Ord local $G^*_i$, and Hot/Cold Spot Identification. 
+
+Definitions:
+
+* **Moran's I**: Moran's I is a measure of spatial autocorrelation, quantifying the degree to which a variable is similarly distributed across neighboring geographic areas. It ranges from -1 (indicating perfect dispersion) to +1 (indicating perfect clustering), with values around 0 suggesting a random spatial pattern. It is used to detect and measure the presence of spatial autocorrelation, helping analysts understand whether the spatial distribution of a variable is clustered, dispersed, or random.
+* **Monte Carlo Simulations**: Monte Carlo simulation is a computational technique that uses repeated random sampling to estimate the statistical properties of a system. It is used in tandem with Moran's I calculation to assess the significance of observed spatial autocorrelation by comparing it to the distribution of Moran's I values generated under the null hypothesis of spatial randomness. This is preformed as suggested by Gimond.
+* **Moran's Scatter Plot**: Moran's scatterplot is a graphical representation that illustrates the relationship between a variable's values and the spatially lagged values of the same variable, used to visualize spatial autocorrelation. The plot typically includes a 45-degree reference line and divides the data points into four quadrants to help identify patterns of clustering or dispersion. It is used to diagnose and visualize spatial autocorrelation, helping to identify patterns of spatial clustering or dispersion in a dataset.
+* **Local Spatial Autocorrelation**: Local measures of spatial autocorrelation, like the Getis-Ord local $G^*_i$, are used to identify clusters or "hot spots" of similar values within a spatial dataset. The Getis-Ord local $G^*_i$ statistic specifically measures the degree of clustering of high or low values around each point, indicating areas with significant local spatial association.
+    * *Positive Gi Values*: indicate areas where high values of rpl_themes are surrounded by other high values, or low values are surrounded by other low values. This suggests clustering of similar values.
+    * *Negative Gi Values*: Indicate areas where high values of rpl_themes are surrounded by low values, or vice versa. This suggests spatial outliers or contrast.
+    
+```{r, include = FALSE}
 knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
 knitr::opts_chunk$set(fig.width=6, fig.height=3.8) 
+options(tigris_use_cache = TRUE)
+options(repos = c(CRAN = "https://cran.r-project.org"))
 ```
 
-# Data Cleaning and Exploratory Data Analysis 
 
-## SVI Cleaning and Feature Engineering 
+```{r preparation, include = FALSE}
+### importing packages
+# define desired packages 
+library(tidyverse)  # general data manipulation
+library(knitr)      # Rmarkdown interactions
+library(here)       # define top level of project folder
+                        # this allows for specification of where 
+                        # things live in relation to the top level
+library(readr)      # imports csv files
+library(corrplot)   # correlation matrix
+library(ggpubr)     # combined graphs
+# spatial tasks
+library(tigris)     # obtain shp files 
+library(spdep)      # exploratory spatial data analysis
 
-The overall summary ranking variable is *RPL_THEMES*, and it will serve as the primary response variable. All **e_** variables will serve as predictor variables, meanwhile, the all **pct_** variables are percentages of the aforementioned variables. The SVI data contains `r length(unique(svi$fips))` census tracts, however the Census Bureau states that [244 tracts exist](https://www.census.gov/geographies/reference-files/2010/geo/state-local-geo-guides-2010/rhode-island.html#:~:text=Rhode%20Island%20has%20244%20census,groups%2C%20and%2025%2C181%20census%20blocks.).
 
-Below is the output of `str(df)`.
-
-```{r svi cleaning}
-#### Cleaning 
-df_svi = svi %>% 
-  select(fips, location, rpl_themes, starts_with("e_")) %>%
-  select(-e_hu, -e_hh, -(e_daypop:e_otherrace))
-
-df_svi = df_svi %>% 
-  filter_at(vars(rpl_themes), any_vars(. != -999)) %>% 
-  mutate(fips = as.character(fips)) %>%
-  mutate(across(starts_with("e"), ~ ./e_totpop, .names = "pct_{col}")) %>% 
-  select(-e_totpop, -pct_e_totpop)
-
-str(df_svi)
+### loading data 
+svi_df = read_csv(here::here("01_Data", "svi_df.csv")) %>% 
+  mutate(fips = as.character(fips))
 ```
 
-## Distribution of Variables 
+\newpage
+
+# Distribution of Variables 
 
 This section will produce graphs that contain both non-spatial and spatial distribution of predictor variables. 
 
-```{r}
+```{r distribution}
 #### Brief EDA - no need for graphics since the table illustrates 
-columns = df_svi %>% 
+columns = svi_df %>% 
   select(starts_with("e_")) %>% 
   colnames()
 
 # Create a for loop to generate histograms for each column
 plot_lst = list()
-plot_lst[["rpl_themes"]] = ggplot(df_svi, aes(rpl_themes)) + geom_histogram() + theme_bw()
+plot_lst[["rpl_themes"]] = ggplot(svi_df, aes(rpl_themes)) + geom_histogram() + theme_bw()
 
 for (col in columns) {
-  p = ggplot(df_svi, aes_string(x = col)) + 
+  p = ggplot(svi_df, aes_string(x = col)) + 
     geom_histogram() + 
     #ggtitle(paste("Histogram of", col)) +
     theme_bw()
@@ -97,14 +103,12 @@ for (col in columns) {
 }
 ```
 
-```{r}
+```{r sptaial distribution}
 # obtaining SPH files for RI tracts
-tracts = tracts(state = "RI", year = 2010, cb = TRUE)
+tracts = tracts(state = "RI", year = 2022, cb = TRUE)
 
-# removing excess characters to allow for join  
-tracts$GEO_ID = str_remove(tracts$GEO_ID, "^1400000US")
 # joining data 
-svi_map = left_join(tracts, df_svi, by = c("GEO_ID" = "fips"))
+svi_map = inner_join(tracts, svi_df, by = c("GEOID" = "fips"))
 
 # making map for primary index 
 a = ggplot(data = svi_map, aes(fill = rpl_themes)) + 
@@ -116,11 +120,11 @@ a = ggplot(data = svi_map, aes(fill = rpl_themes)) +
 # making maps for the remaining predictors 
 plot_lst_sp = list()
 plot_lst_sp[["rpl_themes"]] = a
-
-columns = df_svi %>% 
-  select(starts_with("pct_e_")) %>% 
-  colnames()
   
+columns = svi_df %>% 
+  select(starts_with("e_")) %>% 
+  colnames()
+
 for (col in columns){
   p = ggplot(data = svi_map, aes_string(fill = col)) + 
     geom_sf(lwd = 0.01) + 
@@ -131,7 +135,7 @@ for (col in columns){
 }
 ```
 
-```{r}
+```{r making combined distribution graphs}
 # overall index variable
 a = ggarrange(plot_lst[["rpl_themes"]], plot_lst_sp[["rpl_themes"]])
 annotate_figure(a, 
@@ -141,125 +145,122 @@ annotate_figure(a,
 ############ SocioEconomic Status
 
 # persons below 150% poverty estimate
-b = ggarrange(plot_lst[["e_pov150"]], plot_lst_sp[["pct_e_pov150"]])
+b = ggarrange(plot_lst[["e_pov150"]], plot_lst_sp[["e_pov150"]])
 annotate_figure(b, 
                 top = text_grob("Distibution of Person Below 150% Poverty Estimates", face = "bold", size = 14),
                 fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 # civilian (age 16+) unemployed estimate
-c = ggarrange(plot_lst[["e_unemp"]], plot_lst_sp[["pct_e_unemp"]])
+c = ggarrange(plot_lst[["e_unemp"]], plot_lst_sp[["e_unemp"]])
 annotate_figure(c, 
                 top = text_grob("Distibution of Civilian (16 yrs+) Unemployed Estimates", face = "bold", size = 14),
                 fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 # housing cost-burdened occupied housing united with annual income less than 75,000
-d = ggarrange(plot_lst[["e_hburd"]], plot_lst_sp[["pct_e_hburd"]])
+d = ggarrange(plot_lst[["e_hburd"]], plot_lst_sp[["e_hburd"]])
 annotate_figure(d, 
                 top = text_grob("Distibution of Cost-Burdened Occupied Housing United (< $75k)", face = "bold", size = 14),
                 fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 # persons (25 yrs +) with no high school diploma estiamte
-e = ggarrange(plot_lst[["e_nohsdp"]], plot_lst_sp[["pct_e_nohsdp"]])
+e = ggarrange(plot_lst[["e_nohsdp"]], plot_lst_sp[["e_nohsdp"]])
 annotate_figure(d, 
                 top = text_grob("Distibution of Persons (25 yrs+) With No High School Diploma", face = "bold", size = 12),
                 fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 # uninsured in the total civilian noninstiutionalized population estimate
-f = ggarrange(plot_lst[["e_uninsur"]], plot_lst_sp[["pct_e_uninsur"]])
+f = ggarrange(plot_lst[["e_uninsur"]], plot_lst_sp[["e_uninsur"]])
  annotate_figure(f, 
                 top = text_grob("Distibution of Uninsured in Total Civilian Non-Institutionalized Population Estimate", face = "bold", size = 10),
                 fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
  
 ################ Household Characteristics 
 # distribution of persons age 65 or older
-a = ggarrange(plot_lst[["e_age65"]], plot_lst_sp[["pct_e_age65"]])
+a = ggarrange(plot_lst[["e_age65"]], plot_lst_sp[["e_age65"]])
  annotate_figure(a, 
                 top = text_grob("Distibution of Persons Aged 65 or Older Estimate", face = "bold", size = 14),
                 fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 # distribution of persons 17 or younger
-b = ggarrange(plot_lst[["e_age17"]], plot_lst_sp[["pct_e_age17"]])
+b = ggarrange(plot_lst[["e_age17"]], plot_lst_sp[["e_age17"]])
  annotate_figure(b, 
                 top = text_grob("Distibution of Persons Aged 17 or Younger Estimate", face = "bold", size = 14),
                 fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
  
 #  total civilian noninstiutionalized population with a disability estimate
-c = ggarrange(plot_lst[["e_uninsur"]], plot_lst_sp[["pct_e_uninsur"]])
+c = ggarrange(plot_lst[["e_disabl"]], plot_lst_sp[["e_disabl"]])
  annotate_figure(c, 
                 top = text_grob("Distibution of Total Civilian Non-Institutionalized Population with a Disability Estimate", face = "bold", size = 10),
                 fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
-# single parent hosueholds with children less than 18 estiamte 
-d = ggarrange(plot_lst[["e_sngpnt"]], plot_lst_sp[["pct_e_sngpnt"]])
+# single parent households with children less than 18 estiamte 
+d = ggarrange(plot_lst[["e_sngpnt"]], plot_lst_sp[["e_sngpnt"]])
 annotate_figure(d, 
                top = text_grob("Distribution of Single Parent Households with Children Less than 18 Estimate", face = "bold", size = 10),
                 fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 # persons (5 yrs+) who speak english " less than well" estimate
-e = ggarrange(plot_lst[["e_limeng"]], plot_lst_sp[["pct_e_limeng"]])
+e = ggarrange(plot_lst[["e_limeng"]], plot_lst_sp[["e_limeng"]])
 annotate_figure(e, 
                 top = text_grob("Distribution of Person (5 yrs+) Who Speak English 'less than well' Estiamte", face = "bold", size = 12),
                 fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 ################# Racial & Ethnic Minority Status
 # minority estimate (Hispanic or latino of any race)
-a = ggarrange(plot_lst[["e_minrty"]], plot_lst_sp[["pct_e_minrty"]])
+a = ggarrange(plot_lst[["e_minrty"]], plot_lst_sp[["e_minrty"]])
 annotate_figure(a, 
                 top = text_grob("Distribution of Minority Persons Estimate", face = "bold", size = 12),
                 fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 ################# Housing Type & Transportation 
 # housing in structures with 10 or more unites estimate
-a = ggarrange(plot_lst[["e_munit"]], plot_lst_sp[["pct_e_munit"]])
+a = ggarrange(plot_lst[["e_munit"]], plot_lst_sp[["e_munit"]])
 annotate_figure(a, 
                 top = text_grob("Distribution of Housing in Structures with 10 or More Units Estimate", face = "bold", size = 12),
                 fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 # mobile homes estimate
-b = ggarrange(plot_lst[["e_mobile"]], plot_lst_sp[["pct_e_mobile"]])
-annotate_figure(a, 
+b = ggarrange(plot_lst[["e_mobile"]], plot_lst_sp[["e_mobile"]])
+annotate_figure(b, 
                 top = text_grob("Distribution of Mobile Homes Estimate", face = "bold", size = 14),
                 fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 # More People Than Rooms Estimates
-c = ggarrange(plot_lst[["e_mobile"]], plot_lst_sp[["pct_e_mobile"]])
+c = ggarrange(plot_lst[["e_crowd"]], plot_lst_sp[["e_crowd"]])
 annotate_figure(c, 
                 top = text_grob("Distribution of Occupied Housing Units With More People Than Rooms Estimate", face = "bold", size = 10),
                 fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
 # households with no vehicle available 
-d = ggarrange(plot_lst[["e_noveh"]], plot_lst_sp[["pct_e_noveh"]])
+d = ggarrange(plot_lst[["e_noveh"]], plot_lst_sp[["e_noveh"]])
 annotate_figure(d, 
                 top = text_grob("Distribution of Households With No Vehicles Avaiable Estimate", face = "bold", size = 14),
                 fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
-# households with no vehicle available 
-f = ggarrange(plot_lst[["e_groupq"]], plot_lst_sp[["pct_e_groupq"]])
-annotate_figure(f, 
-                top = text_grob("Distribution of Persons In Group Quarters Estimate", face = "bold", size = 14),
-                fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
+# persons in group quearters estimate 
+f = ggarrange(plot_lst[["e_groupq"]], plot_lst_sp[["e_groupq"]])
 ```
 
-## Correlation Matrix
+# Correlation Matrix
 
-```{r, fig.height = 5, fig.width = 8}
+```{r correlation matrix plot, fig.height = 5, fig.width = 8}
 # correlation matrix
-temp = df_svi %>% select(-fips, -location) %>% select(rpl_themes, starts_with("e_"))
+temp = svi_df %>% select(-fips, -location) %>% select(rpl_themes, starts_with("e_"))
 temp = cor(temp)
 corrplot(temp, method = "square", type="upper", sig.level = 0.05, insig = "blank")
 ```
 
 \newpage
 
-## Associations Between Response and Predictor Variables 
+# Associations Between Response and Predictor Variables 
 
-The following section illustrates the need for non-linear regression models. The Social Vulnerability Index covers 4 themes: Socioeconomic Status, Household Characteristics, Racial & Ethnic Minority Status, and Housing Type & Transportation Status.
+The following section illustrates the need for non-linear regression models, with regression lines being fitted with LOESS. The Social Vulnerability Index covers 4 themes: Socioeconomic Status, Household Characteristics, Racial & Ethnic Minority Status, and Housing Type & Transportation Status.
 
-```{r}
+```{r scatter plots and associations}
 lst = list()
 
-columns = df_svi %>% 
+columns = svi_df %>% 
   select(starts_with("e_")) %>% 
   colnames()
 
 for (col in columns){
-  p = ggplot(data = df_svi, aes_string(x = col, y = "rpl_themes")) + 
+  p = ggplot(data = svi_df, aes_string(x = col, y = "rpl_themes")) + 
     geom_point() + 
     theme_bw() +
     #labs(title = paste("Scatter plot of", col, "vs. rpl_themes")) +
@@ -291,66 +292,101 @@ annotate_figure(d, top = text_grob("Theme: Housing Type & Transportation Status"
                 fig.lab = "A.C.S. 2018-2022", fig.lab.pos = c("bottom.right"))
 ```
 
-```{r}
-setwd("/Users/diazg/OneDrive/Desktop/Thesis/03_Code/a_data/SVI")
-write.csv(df_svi, "/Users/diazg/OneDrive/Desktop/Thesis/03_Code/a_data/SVI/df_svi.csv")
-#st_write(svi_map, "svi_map.shp")
-```
+\newpage 
 
+# Moran's I Calculation and Scatter Plot 
 
-```{r}
-#mtryiter <- function(from, to, stepFactor=1.05) {
-#  nextEl <- function() {
-#    if (from > to) stop('StopIteration')
-#    i <- fromfrom <<- ceiling(from * stepFactor)
-#    i
-#    }
-#  obj <- list(nextElem=nextEl)
-#  class(obj) <- c('abstractiter', 'iter')
-#  obj
-#  }
-# Create a vector of ntree values of interest
-#vntree <- c(51, 101, 501, 1001, 1501)
+At $\alpha = 0.05$, all variables are statistically significant. Variables that had a statistic close to zero include the estimated number of unemployed individuals (16 yrs +) (`e_unemp`) and the estimated number of persons in group quarters (`e_groupq`). Meanwhile, the variables with the top 3 highest moran's i value include the number of minorities (`e_minrty`), the number of individuals who self report having limited english (`e_limeng`), and the SVI Summary Values (`rpl_themes`). All other statistically significant variables demonstrated weaker presence of spatial autocorrelation, and the only variable to be statistically insignificant (i.e., demonstrate no spatial autocorrelation) is the proportion of individuals who are unemployed (`e_unemp`). 
 
-# Specify the predictor (x) and outcome (y) object
-# x contains columns 3, 5:12 and 15:20 as predictor variables# Type names(world)to see column index numbers
-# The 13th column is literacy, the outcome variable
-#x <- df[,2:ncol(df)]
-#y <- df[,1]
+Additionally, a moran's scatterplot was only preformed for the outcome of interest since creating graphs for all variables would provide redundant information. However, these graphs can be made available upon request. In support with the Moran's I calculation with Monte Carlo Simulations, the scatterplot suggests a positive correlation between the SVI Summary Value and its spatial lag, representative of spatial autocorrelation in the data.
 
-# Create a function (tune) to get random forest error information for different mtry values.
-# Note this function handles both classification and regression 
-#tune <- function(x, y, ntree=vntree, mtry=NULL, keep.forest=FALSE, ...) {
-#  comb <- if (is.factor(y))
-#    function(a, b) rbind(a, data.frame(ntree=ntree, mtry=b$mtry, error=b$err.rate[ntree, 1]))
-#  else
-#    function(a, b) rbind(a, data.frame(ntree=ntree, mtry=b$mtry, error=b$mse[ntree]))
-#  foreach(mtry=mtryiter(1, ncol(x)), .combine=comb, .init=NULL, .packages='randomForest') %dopar% {
-#            randomForest(x, y, ntree=max(ntree), mtry=mtry, keep.forest=FALSE, ...)}}
+**All examined spatial components suggest that a geographically weighted regression model should be implemented.**
 
-# Create and print randomForest() results
-#results <- tune(x, y)
-```
+$\\$
+$\\$
 
+```{r morans info}
+## define neighbors
+nb_list = poly2nb(svi_map, queen=TRUE)
+## assign weights
+weights = nb2listw(nb_list, style="W", zero.policy=TRUE)
 
-
-```{r, include = FALSE}
-# Appendix A - Spatial Distribution of Estimates 
-# making maps for the remaining predictors 
-plot_lst_sp = list()
-
-columns = df_svi %>% 
-  select(starts_with("e_")) %>% 
+## calculating test statistic - moran's i via monte carlo simulation
+columns = as.data.frame(svi_map) %>% 
+  select(rpl_themes, starts_with("e_")) %>% 
   colnames()
-  
+
+moran_df = tibble(NULL)
+
+## creates calculations for all variables
 for (col in columns){
-  p = ggplot(data = svi_map, aes_string(fill = col)) + 
-    geom_sf(lwd = 0.05) + 
-    labs(title = paste("Spatial Distibution of", col)) +
-    scale_fill_viridis_b() + 
-    theme_void()
+  # calculate the moran's object
+  res = moran.mc(pull(svi_map, !!col), 
+                 listw = weights,
+                 nsim = 999, 
+                 zero.policy = TRUE) # drops islands from the calculation 
   
-  plot_lst_sp[[col]] = p
+  # use the res object to create a new row in moran_df
+  moran_df = moran_df %>% 
+    bind_rows(tibble(variable = col, 
+                     statistic = res$statistic, 
+                     pvalue = res$p.value))
 }
+
+# creating moran scatter plot 
+moran.plot(x = svi_map$rpl_themes, 
+           listw = weights, 
+           xlab = "SVI Summary Values", 
+           ylab = "Neighbors Standardized SVI Summary Values",
+           main = c("Moran Scatterplot for SVI Summary Values", 
+                    "in Rhode Island, 2022"))
+```
+
+\newpage
+
+```{r}
+# creating summary table for moran's i values for all variables 
+moran_df = moran_df %>% arrange(desc(statistic))
+knitr::kable(moran_df, caption = c("Moran's I with Monte Carlo Simulations (nsim = 999)"), 
+             digits = c(0, 3, 3))
+```
+
+
+# Local Spatial Autocorrelation with $G^*_i$ & Hot Spot Identification
+
+Both maps illustrate that Providence, Pawtucket, and Woonsocket demonstrate high values of Social Vulnerability. 
+
+```{r, fig.width=6, fig.height=3.5}
+# For Gi*, re-compute the weights with `include.self()`
+localg_weights = nb2listw(include.self(nb_list), style="W", zero.policy=TRUE)
+svi_map = svi_map %>% 
+  mutate(localG = as.numeric(localG(svi_map$rpl_themes, localg_weights)))
+
+# Local spatial autocorrelation
+localg = ggplot(svi_map, aes(fill = localG)) + 
+  geom_sf() +
+  scale_fill_distiller(palette = "RdYlBu") + 
+  theme_void() + 
+  labs(fill = "Local Gi*")
+
+# hotspot identification
+svi_map = svi_map %>%
+  mutate(hotspot = case_when(
+    localG >= 2.576 ~ "High",
+    localG <= -2.576 ~ "Low",
+    TRUE ~ "Not Sign."
+  ))
+
+spots_map = ggplot(svi_map,
+                   aes(fill = hotspot),
+                   color = "grey90", 
+                   size = 0.001) + 
+  geom_sf() + 
+  scale_fill_manual(values = c("red", "blue", "grey")) + 
+  theme_void() +
+  labs(fill = "Hot Spot ")
+
+
+ggarrange(localg, spots_map)
 ```
 

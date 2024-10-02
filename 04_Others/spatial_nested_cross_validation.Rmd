@@ -1,0 +1,359 @@
+---
+title: | 
+    | **Defining `nested_spatial_cv()`: A Method for Spatial Nest Cross Validation for a Traditional Random Forest Model**
+subtitle: |
+    |
+    | Thesis for a Master of Public Health, Epidemiology
+author: |
+    | Nathan Garcia-Diaz
+    |
+    |
+    | Brown University, School of Public Health
+date: |
+    |
+    | `r format(Sys.Date(), '%B %d, %Y')`
+mainfont: Times New Roman
+fontsize: 11 pt
+output:
+  pdf_document:
+    highlight: tango
+    toc: TRUE
+  latex_engine: luatex
+urlcolor: blue
+include-before:
+- '`\newpage{}`{=latex}'
+---
+
+```{=tex}
+\begingroup
+\fontsize{9}{16}\selectfont
+```
+$\\$ $\\$ *Note: the table of contents acts as in-document hyperlinks* \endgroup
+
+\newpage
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+knitr::opts_chunk$set(fig.width=6, fig.height=4) 
+options(tigris_use_cache = TRUE)
+options(repos = c(CRAN = "https://cran.r-project.org"))
+```
+
+# Purpose Statement
+
+The following code describes the spatial nest-cross validation function used within the *Unveiling Vulnerability: Implementation of Geographically Weighted Random Forest Models across Federally Provided Indices*. Nested cross-validation is a technique used to assess the performance of a model while tuning hyperparameters. It helps to avoid over fitting and provides an unbiased estimate of model performance. A spatial nested cross-validation is a two-level cross-validation procedure designed to evaluate a model’s performance and tune its hyperparameters simultaneously. `nested_spatial_cv()` can be considered to be spatial cross validation derived method because it manages a autocorrelation through the use of the `blockCV` package; whenever cross validation is mentioned it refers to a spatial cross-validation. $\\$ The function involves two main stages:
+
+-   Outer Cross-Validation Loop:
+    -   Purpose: To estimate the model’s performance on unseen data and provide a more reliable measure of how well the model generalizes to new data.
+    -   Procedure: The data set is divided into several folds (e.g., 5 or 10). In each iteration, one fold is used as the test set, and the remaining folds are used for training and hyper parameter tuning. This process is repeated for each fold, ensuring that every data point is used for testing exactly once.
+-   Inner Cross-Validation Loop:
+    -   Purpose: To select the best hyperparameters for the model.
+    -   Procedure: Within each training set from the outer loop, a further cross-validation is performed. This involves splitting the training data into additional folds (e.g., 3 or 5). The model is trained with various hyper parameter combinations on these inner folds, and the performance is evaluated to choose the optimal set of hyperparameters. $\\$ Example Workflow:
+-   Split the data into outer_k folds.
+-   For each fold in the outer loop:
+-   Use outer_k - 1 folds for training.
+-   Apply the inner cross-validation on this training set to tune hyperparameters.
+-   Evaluate the performance of the model with the selected hyperparameters on the held-out test fold.
+-   Average the performance metrics across all outer folds to get an overall estimate.
+
+\newpage
+
+A visual description of the method, which can be in [Jian et al (2022) - Rapid Analysis of Cylindrical Bypass Flow Field Based on Deep Learning Model](https://iopscience.iop.org/article/10.1088/1755-1315/1037/1/012013)
+
+![](C:\Users\diazg\Documents\GitHub\MPH-Thesis_GeographicalRandomForest\NestedCrossValidation.png)
+
+\newpage
+
+# Preparation
+
+```{r, include = FALSE}
+# Install and load necessary packages
+# install.packages(c("sp", "sf", "ranger", "caret", "dplyr", "cluster"))
+```
+
+```{r}
+# Load the libraries
+library(sp)        # Spatial data handling
+library(sf)        # Simple feature data handling
+library(caret)     # Cross-validation and model tuning
+library(dplyr)     # Data manipulation
+library(cluster)   # Clustering methods
+library(readr)     # Read a csv file 
+library(tigris)    # obtain shp files 
+library(randomForest) # Random Forest implementation
+library(blockCV)
+library(doParallel)
+library(foreach)
+```
+
+\newpage
+
+# Defining Functions
+
+2 functions are defined: `customRF()` and `nested_spatial_cv()`
+
+## `customRF()`: Overview
+
+**Overview**: This function is used to the preform an exhaustive grid search of `ntree` and `mtry` random forest hyperparameters. This is used as a method for the `nested_spatial_cv_with_clustering()` function. This is code is provided by Jason Brownless (2020) at [Tune Machine Learning Algorithms in R (random forest case study)](https://machinelearningmastery.com/tune-machine-learning-algorithms-in-r/).
+
+``` r
+model <- train(
+  response_var ~ .,  # Formula: specifies the response variable and all predictor variables 
+  data = df,  # Data: the training dataset containing both predictors and the response variable
+  method = customRF,  # Method: specifies the custom Random Forest model defined as 'customRF'
+  trControl = trainControl(method = "cv", number = 5),  # trControl: controls the training process; here, it's set to perform 5-fold cross-validation
+  tuneGrid = tuning_grid <- expand.grid(
+  .mtry = c(2, 4, 6), 
+  .ntree = c(100, 200, 500))
+)
+```
+
+**Explanation**: `customRF()` is a custom Random Forest model for exhaustive grid search with caret
+
+```{r}
+customRF <- list(
+   # Define the model type as regression (since Random Forest can be used for both classification and regression)
+  type = "Regression", 
+  # Specify the package required for the model
+  library = "randomForest", 
+  # Not used in this example, but caret uses it for looping through models with different parameter values
+  loop = NULL 
+)
+
+# Define the hyperparameters to tune (mtry and ntree) and their data types
+customRF$parameters <- data.frame(
+  parameter = c("mtry", "ntree"),  # Hyperparameters to be tuned
+  class = rep("numeric", 2),  # Data types for the hyperparameters
+  label = c("mtry", "ntree")  # Labels for the hyperparameters
+)
+
+# Grid function for hyperparameter tuning (left empty as we are not customizing the grid search process itself)
+customRF$grid <- function(x, y, len = NULL, search = "grid") {}
+
+# Define the model fitting function using the Random Forest algorithm
+customRF$fit <- function(x, y, wts, param, lev, last, weights, classProbs, ...) {
+  randomForest(x, y, mtry = param$mtry, ntree = param$ntree, ...)  # Train the model with specified mtry and ntree
+}
+
+# Define the prediction function for the model
+customRF$predict <- function(modelFit, newdata, preProc = NULL, submodels = NULL) {
+  predict(modelFit, newdata)  # Make predictions using the trained model
+}
+
+# Define a function for returning predicted probabilities (only applicable if the model supports it)
+customRF$prob <- function(modelFit, newdata, preProc = NULL, submodels = NULL) {
+  predict(modelFit, newdata, type = "prob")  # Predict probabilities (useful in classification tasks)
+}
+
+# Define a function to sort the grid results based on mtry (used by caret)
+customRF$sort <- function(x) x[order(x[, 1]),]
+
+# Define a function to extract the levels (classes) in the model (only relevant for classification)
+customRF$levels <- function(x) x$classes
+```
+
+## `nested_spatial_cv_with_clustering()`
+
+*Overview*: The code implements a nested cross-validation procedure specifically designed for spatial data. It begins by calculating spatial autocorrelation to comprehend spatial relationships within the dataset. Next, it creates spatially stratified folds for both outer and inner cross-validation. The custom Random Forest model is then trained and tuned within these spatial folds. Finally, the performance of the model is evaluated on both the inner and outer validation sets.
+
+``` r
+FUNCTION nested_spatial_cv_with_clustering(
+    data,               # The dataset
+    response_var,       # The response variable to predict
+    spatial_col,        # The column with spatial information (default: "geometry")
+    tuning_grid,        # The grid of hyperparameters for tuning
+    outer_k,            # Number of outer folds
+    inner_k,            # Number of inner folds
+    metric              # Performance metric (default: "MSE")
+)
+```
+
+**Explanation**: `nested_spatial_cv()` is a custom function that, and the following is the pseudo code
+
+-   Step 1: Calculate the spatial autocorrelation range using a helper function.
+-   Step 2: Create spatially stratified outer folds using the calculated range.
+-   Step 3: Set up parallel processing to speed up the nested cross-validation process.
+-   Step 4: For each outer fold:
+    -   Split the data into training and testing sets.
+    -   For each inner fold within the training data:
+    -   Split the inner training data further.
+    -   Train the model on the inner training data.
+    -   Evaluate the model's performance on the inner validation data.
+    -   Select the best model from the inner folds.
+    -   Evaluate the selected model on the outer testing data.
+-   Step 5: Stop parallel processing once all folds are processed.
+-   Step 6: Return the results of the cross-validation.
+
+```{r}
+# Function to create outer folds
+create_outer_folds <- function(data) {
+  cat("Creating outer folds.\n")
+  output = blockCV::cv_spatial(x = data)
+  outer_folds = output$folds_ids
+  cat("Outer folds created.\n")
+  return(outer_folds)
+}
+
+# Function to create inner folds
+create_inner_folds <- function(training_data) {
+  cat("Creating inner folds.\n")
+  output = blockCV::cv_spatial(x = training_data)
+  inner_folds = output$folds_ids
+  cat("Inner folds created.\n")
+  return(inner_folds)
+}
+
+# Function to train the model
+train_model <- function(inner_training_data, response_var, tuning_grid, inner_k) {
+  cat("Training model with inner cross-validation...\n")
+  model <- caret::train(
+    as.formula(paste(response_var, "~ .")),  # Formula using the response variable
+    data = inner_training_data,
+    method = customRF,  # Method for training (custom Random Forest)
+    trControl = caret::trainControl(method = "cv", number = inner_k),  # Inner cross-validation
+    tuneGrid = tuning_grid  # Grid of hyperparameters to tune
+  )
+  cat("Model training complete.\n")
+  return(model)
+}
+
+# Function to evaluate the model
+evaluate_model <- function(model, validation_data, metric, response_var) {
+  cat("Evaluating model...\n")
+  predictions <- predict(model, newdata = validation_data)
+  true_values <- validation_data[[response_var]]
+  
+  if (is.factor(true_values)) {
+    # Classification: Calculate accuracy
+    performance_metric <- mean(predictions == true_values)
+  } else {
+    # Regression: Calculate specified metric
+    if (metric == "MSE") {
+      performance_metric <- mean((predictions - true_values)^2)
+    } else if (metric == "OOBMSE") {
+      performance_metric <- model$finalModel$mse[model$bestTune$ntree]
+    } else if (metric == "MAE") {
+      performance_metric <- mean(abs(predictions - true_values))
+    }
+  }
+  cat("Model evaluation complete.\n")
+  return(performance_metric)
+}
+
+# Main function for nested spatial cross-validation with hierarchical clustering
+nested_spatial_cv <- function(data,
+                              response_var,
+                              spatial_col = "geometry",  # Add spatial_col argument
+                              tuning_grid = expand.grid(mtry = c(3:8), 
+                                                                        ntree = c(250, 300, 350, 400, 450, 500, 550, 600, 800, 1000)),
+                              outer_k = 5,
+                              inner_k = 5,
+                              metric = "MSE") {
+  
+  cat("Starting nested spatial cross-validation...\n")
+  
+  
+  # Create outer folds
+  outer_folds <- create_outer_folds(data)
+  
+  cat("Initialize parallel processing...\n")
+  # Initialize parallel processing to speed up computation
+  nCores = detectCores() - 1
+  cl = parallel::makeCluster(nCores)
+  doParallel::registerDoParallel(cl)
+  
+  # Perform nested cross-validation
+  outer_results <- foreach::foreach(i = seq_len(outer_k), 
+                                    .combine = 'c', 
+                                    .export = c("create_inner_folds", "train_model", "evaluate_model")) %dopar% {
+    cat("Processing outer fold", i, "...\n")
+    # Access the indices for the current outer fold
+    fold_indices <- outer_folds[[i]]
+    
+    # Split the data into training and testing based on the current outer fold
+    training_data <- data[-fold_indices, ]
+    testing_data <- data[fold_indices, ]
+    
+    # Create inner folds for hyperparameter tuning within the training data
+    inner_folds <- create_inner_folds(training_data)
+    
+    # Perform hyperparameter tuning using inner cross-validation
+    inner_results <- lapply(seq_len(inner_k), function(j) {
+      cat("Processing inner fold", j, "...\n")
+      inner_fold_indices <- inner_folds[[j]]
+      inner_training_data <- training_data[-inner_fold_indices, ]
+      inner_validation_data <- training_data[inner_fold_indices, ]
+      
+      # Train the model on the inner training data
+      model <- train_model(inner_training_data, response_var, tuning_grid, inner_k)
+      
+      # Evaluate the model on the inner validation data
+      performance_metric <- evaluate_model(model, inner_validation_data, metric, response_var)
+      
+      return(list(
+        fold = j,
+        model = model,
+        performance_metric = performance_metric
+      ))
+    })
+    
+    # Select the best model from the inner cross-validation results
+    best_inner_model <- inner_results[[which.min(sapply(inner_results, function(res) res$performance_metric))]]$model
+    
+    # Evaluate the best inner model on the outer testing data
+    outer_performance_metric <- evaluate_model(best_inner_model, testing_data, metric, response_var)
+    
+    cat("Outer fold", i, "complete with performance metric:", outer_performance_metric, "\n")
+    
+    return(list(
+      fold = i,
+      best_inner_model = best_inner_model,
+      outer_performance_metric = outer_performance_metric
+    ))
+  }
+  
+  # Stop parallel processing and release resources
+  parallel::stopCluster(cl)
+  
+  cat("Nested spatial cross-validation complete.\n")
+  
+  return(outer_results)
+}
+
+```
+
+
+# Example of `nested_spatial_cv()`'s Implementation 
+
+The following code will use the CDC/ATSDR Social Vulnerability Index
+
+## Preparation - Loading Data
+
+```{r}
+
+```
+
+## Code Excuetion 
+
+```{r}
+mod = nested_spatial_cv_with_clustering(
+    data = map,
+    response_var = "rpl_themes",
+    spatial_col = "geometry",
+    tuning_grid = expand.grid(
+      .mtry = c(3:8), 
+      .ntree = c(250, 300, 350, 400, 450, 500, 550, 600, 800, 1000)),
+    outer_k = 5,
+    inner_k = 5,
+    metric = "MSE"
+)
+```
+
+
+## Examiniation of Results 
+
+```{r}
+
+```
+
+

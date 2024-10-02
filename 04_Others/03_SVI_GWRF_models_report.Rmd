@@ -1,0 +1,480 @@
+---
+title: | 
+    | **Model Creation and Validation for the Social Vulnerability Index**
+    | **Training and Evaluating Geographically Weighted Random Forest Models**
+subtitle: |
+    |
+    | Thesis for a Master of Public Health, Epidemiology
+author: |
+    | Nathan Garcia-Diaz
+    |
+    |
+    | Brown University, School of Public Health
+date: |
+    |
+    | `r format(Sys.Date(), '%B %d, %Y')`
+mainfont: Times New Roman
+fontsize: 11 pt
+output:
+  pdf_document:
+    highlight: tango
+    toc: TRUE
+  latex_engine: luatex
+urlcolor: blue
+include-before:
+- '`\newpage{}`{=latex}'
+---
+
+\begingroup
+\fontsize{9}{16}\selectfont
+$\\$
+$\\$
+*Note: the table of contents acts as in-document hyperlinks*
+\endgroup
+
+\newpage
+
+# Purpose Statement
+
+The purpose of this code build/evaluated a geographically weighted random forest model, and to illustrate the result of both models here. The hyperparameters for this model are defined by best preforming traditional random forest model, found in `03_SVI_RF_models_report`.  A GWRF model expands on this concept by incorporating spatial information by weighting the training samples based on their geographic proximity to the prediction location. The splitting process in a RF model is determined by the mean squared error and in a GWRF is influenced by the spatial weights (i.e., weighted mean squared error), which adjust the contribution of each sample based on its geographic distance. Lastly, the feature importance plots will be generated for the final, and local feature importance plots will also be created.
+
+## Defining Hyperparameters 
+
+In [James et al 2021, Ch 8.2.2 Random Forests](https://www.statlearning.com/), [James et al 2023, Ch 15.2 Definition of Random Forests](https://hastie.su.domains/Papers/ESLII.pdf) and [Garson 2021, Ch 5 Random Forest](https://www.amazon.com/Data-Analytics-Social-Sciences-Applications/dp/0367624273), the hyperparameters that are shared between the traditional RF and the geographically-weighted RF models include: 
+
+-   **Number of randomly selected predictors**: This is the number of predictors (p) considered for splitting at each node. It controls the diversity among the trees. A smaller m leads to greater diversity, while a larger m can make the trees more similar to each other.
+    -   for regression this defaults to $p/3$, where *p* is the total of predictor variables
+-   **Number of trees**: This is the total number of decision trees in the forest (m). More trees generally lead to a more stable and accurate model, but at the cost of increased computational resources and time.
+    -   for the `randomForest::randomForest()`, this defaults to 500
+
+Additionally, GWRF involves an extra tuning spatial parameters:
+
+-   **Bandwidth parameter**: This controls the influence of spatial weights, determining how quickly the weight decreases with distance. A smaller bandwidth means only very close samples have significant influence, while a larger bandwidth allows more distant samples to also contribute to the model.
+
+## Defining Package for Geographically Weighted Random Forest Model
+
+[Georganos et al (2019)](https://www.tandfonline.com/doi/full/10.1080/10106049.2019.1595177) created the `package(SpatialML)`, and subsequently the tuning is made possible by the `SpatialML::grf.bw()` function. The function uses an exhaustive approach (i.e., it tests sequential nearest neighbor bandwidths within a range and with a user defined step, and returns a list of goodness of fit statistics).
+
+## Defining: Out of Bag Mean Error Rate 
+
+In [Garson 2021](https://www.taylorfrancis.com/books/mono/10.4324/9781003109396/data-analytics-social-sciences-david-garson), Ch 5 Random Forest, Garson teaches Random Forest Models by using `randomForest::randomForest()`, and in chapter 5.5.9 (pg. 267), he provides methods for tuning both of these parameters simultaneously using the Out of Bag MSE Error Rates. This value is a measure of the prediction error for data points that were not used in training each tree, hence this value is unique to ensemble methods. It is mathematically expressed as $\text{OOB Error Rate} = \frac{1}{n} \Sigma^{N}_{i=1} (y_i - \hat y_i^{\text{OOB}})^2$ . $\hat y_i^{\text{OOB}}$ is the OOB prediction for the i-th observation, which is obtained by averaging the predictions from only those trees that did not include i in their bootstrap sample. To provide a high-level summary, since each tree in a Random Forest is trained on a bootstrap sample (a random sample with replacement) of the data, approximately one-third of the data is not used for training each tree. This subset of data is referred to as the "out-of-bag" data for that tree, and this value is calculated using the data points that were not included in the bootstrap sample used to build each tree. The code in this file has been modified so that cross validation is implemented to ensure consistency across the models, and as such the only difference across models is the metric and the type of nested cross validation being used. 
+
+## Defining: Partially Spatial Nest-Cross Validation Method
+
+All models will be validated and tuned with a nested cross-validation, a technique used to assess the performance of a model and tuning hyperparameters. It helps to avoid over fitting and provides an unbiased estimate of model performance. A spatial nested cross-validation is a two-level cross-validation procedure designed to evaluate a model’s performance and tune its hyperparameters simultaneously. A nested cross-validation is a method that revolves around an outer and liner loop. An example of the workflow include: 
+
+- Split the data into "outer_k" folds defined by spatial hierarchical clustering.
+- For each fold in the outer loop:
+    - Use "outer_k - 1" folds for training.
+    - Apply the inner cross-validation on this training set to tune hyperparameters.
+    - Evaluate the performance of the model with the selected hyperparameters on the held-out test fold.
+- Average the performance metrics across all outer folds to get an overall estimate.
+
+******
+
+A visual description of the method, which can be in [Jian et al (2022) - Rapid Analysis of Cylindrical Bypass Flow Field Based on Deep Learning Model](https://iopscience.iop.org/article/10.1088/1755-1315/1037/1/012013).
+
+```{r, out.width = "350px", fig.align="center"}
+knitr::include_graphics("/Users/diazg/Documents/GitHub/MPH-Thesis_GeographicalRandomForest/NestedCrossValidation.png")
+```
+
+-   Outer Cross-Validation Loop:
+    -   Purpose: To estimate the model’s performance on unseen data and provide a more reliable measure of how well the model generalizes to new data.
+    -   Procedure: The data set is divided into several folds (e.g., 5 or 10). In each iteration, one fold is used as the test set, and the remaining folds are used for training and hyper parameter tuning. Folds are defined by hierarchical clustering. This process is repeated for each fold, ensuring that every data point is used for testing exactly once. 
+-   Inner Cross-Validation Loop:
+    -   Purpose: To select the best hyperparameters for the model.
+    -   Procedure: Within each training set from the outer loop, a further cross-validation is performed. This involves splitting the training data into additional folds (e.g., 3 or 5). The model is trained with various hyper parameter combinations on these inner folds, and the performance is evaluated to choose the optimal set of hyperparameters.
+
+
+# Outline of Model Building Process
+
+5 RF models will be built, and they differ based on the different hyperparameters: (1) default settings; (2)  Exhaustive Grid Search with RMSE as Metric and Traditional Nested Cross Validation, (3) Exhaustive Grid Search with RMSE as Metric and Partially Spatial Nested Cross Validation,  (4)Iterative Grid with Out of Bag Mean Squared Error as Metric and Traditional Nested Cross Validation (i.e., Modified Code from Garson 2021), (5) Iterative Search with Out of Bag Mean Squared Error as Metric and Partially Spatial Nested Cross Validation. For each model, MAE, RMSE, and $R^2$ will be calculated and the hyperparameters of the best model will continue onto the GWRF. To provide points of comparison in the GWRF, two additional models will be created. Thus, two GWRF models will be created: (1) default *mtry* and *ntrees* with optimized *bandwidth parameter*, and (2) using the previously defined best hyperparameters. The same model evaluation metrics will be compared in addition to calculating the residual autocorrelation.
+
+```{r, out.width = "425px", fig.align="center"}
+knitr::include_graphics("/Users/diazg/Documents/GitHub/MPH-Thesis_GeographicalRandomForest/MethodVisualized.png")
+```
+
+\newpage
+
+```{r preparation}
+#####################
+#### Preparation ####
+#####################
+
+### importing packages
+# define desired packages 
+library(tidyverse)    # general data manipulation
+library(knitr)        # Rmarkdown interactions
+library(here)         # define top level of project folder
+                          # this allows for specification of where 
+                          # things live in relation to the top level
+library(foreach)      # parallel execution
+# spatial tasks
+library(tigris)       # obtain shp files 
+library(spdep)        # exploratory spatial data analysis
+# random forest 
+library(caret)        # machine learning model training 
+library(rsample)      # splitting testing/training data
+library(randomForest) # traditional RF model
+library(SpatialML)    # spatial RF model
+# others 
+library(doParallel)   # parallel processing
+library(foreach)      # parallel processing
+library(ggpubr)       # arrange multiple graphs
+library(ClustGeo) 
+
+### setting seed
+set.seed(926) 
+
+### Loading results_rf.csv
+results_rf = read_csv(here::here("02_Code", "results_rf.csv"))
+
+load("C:/Users/diazg/Documents/GitHub/MPH-Thesis_GeographicalRandomForest/02_Code/best_rf_model.RData")
+load("C:/Users/diazg/Documents/GitHub/MPH-Thesis_GeographicalRandomForest/02_Code/rf_model_1.RData")
+load("C:/Users/diazg/Documents/GitHub/MPH-Thesis_GeographicalRandomForest/02_Code/rf_model_2.RData")
+load("C:/Users/diazg/Documents/GitHub/MPH-Thesis_GeographicalRandomForest/02_Code/rf_model_3.RData")
+load("C:/Users/diazg/Documents/GitHub/MPH-Thesis_GeographicalRandomForest/02_Code/rf_model_4.RData")
+load("C:/Users/diazg/Documents/GitHub/MPH-Thesis_GeographicalRandomForest/02_Code/rf_model_5.RData")
+
+
+### loading data 
+svi_df = read_csv(here::here("01_Data", "svi_df.csv")) %>% 
+  mutate(fips = as.character(fips)) %>% 
+  select(-...1)
+
+### obtaining SPH files for RI tracts
+tracts = tracts(state = "RI", year = 2022, cb = TRUE)
+
+### joining data 
+map = inner_join(tracts, svi_df, by = c("GEOID" = "fips")) %>% 
+  select(rpl_themes, starts_with("e_"))
+# keep a copy for later
+map_map = map
+
+### defining analytical coordinates and df 
+df_coords = map %>% 
+  mutate(
+    # redefines geometry to be the centroid of the polygon
+    geometry = st_centroid(geometry),
+    # pulls the lon and lat for the centroid
+    lon = map_dbl(geometry, ~st_point_on_surface(.x)[[1]]),
+    lat = map_dbl(geometry, ~st_point_on_surface(.x)[[2]])) %>% 
+  # removes geometry, coerce to data.frame
+  st_drop_geometry() %>%
+  # only select the lon and lat 
+  select(lon, lat)
+
+# only obtain response and predictor variables 
+df = svi_df %>% 
+  st_drop_geometry() %>% 
+  select(rpl_themes, starts_with("e_")) 
+```
+
+
+# Training a Geographically Weighted Random Forest Model
+
+## GWRF Model 1
+
+This model has hyperparameters defined with *mtry* and *trees* by the default, and optimized *bandwidth.*
+
+```{r gwrf mod 1}
+####################
+#### GWRF Mod 1 ####
+####################
+
+# testing for optimal bandwidth
+temp = SpatialML::grf.bw(rpl_themes ~ e_pov150 + e_unemp + e_hburd + e_nohsdp + 
+                               e_uninsur + e_age65 + e_age17 + e_disabl + 
+                               e_sngpnt + e_limeng + e_minrty + e_munit +
+                               e_mobile + e_crowd + e_noveh + e_groupq, 
+                             dataset = df, 
+                             kernel = "adaptive",
+                             bw.min = 20,
+                             bw.max = 50,
+                             coords = df_coords,
+                             trees = 500, 
+                             mtry = 5, 
+                             step = 1)
+best.bw_gwrf_mod1 = temp$Best.BW
+
+# defining the spatial model with prior model hyperparameters
+gwrf_mod1 = SpatialML::grf(rpl_themes ~ e_pov150 + e_unemp + e_hburd + e_nohsdp + 
+                           e_uninsur + e_age65 + e_age17 + e_disabl + 
+                           e_sngpnt + e_limeng + e_minrty + e_munit +
+                           e_mobile + e_crowd + e_noveh + e_groupq,
+                         dframe = df, 
+                         kernel = "adaptive",
+                         coords = df_coords,
+                         bw = best.bw_gwrf_mod1,
+                         ntree = 500, 
+                         mtry = 5)
+```
+
+The final model hyperparameters have been set to *bandwidth* = `r best.bw_gwrf_mod1`, *mtry* = 5, and *ntrees* = 500.
+
+\newpage
+
+## GWRF Model 2
+
+This model has hyperparameters defined with *mtry* and *trees* by previously defined best preforming Random Forest Model, and optimized *bandwith.*
+
+```{r gwrf mod 2}
+####################
+#### GWRF Mod 2 ####
+####################
+
+# testing for optimal bandwidth
+temp = SpatialML::grf.bw(rpl_themes ~ e_pov150 + e_unemp + e_hburd + e_nohsdp + 
+                               e_uninsur + e_age65 + e_age17 + e_disabl + 
+                               e_sngpnt + e_limeng + e_minrty + e_munit +
+                               e_mobile + e_crowd + e_noveh + e_groupq, 
+                             dataset = df, 
+                             kernel = "adaptive",
+                             bw.min = 20,
+                             bw.max = 50,
+                             coords = df_coords,
+                             trees = Best_ntree, 
+                             mtry = Best_mtry, 
+                             step = 1)
+
+best.bw_gwrf_mod2 = temp$Best.BW
+
+# defining the spatial model with prior model hyparameters
+gwrf_mod2 = SpatialML::grf(rpl_themes ~ e_pov150 + e_unemp + e_hburd + e_nohsdp + 
+                           e_uninsur + e_age65 + e_age17 + e_disabl + 
+                           e_sngpnt + e_limeng + e_minrty + e_munit +
+                           e_mobile + e_crowd + e_noveh + e_groupq,
+                         dframe = df, 
+                         kernel = "adaptive", 
+                         coords = df_coords,
+                         bw = best.bw_gwrf_mod2,
+                         ntree = Best_ntree, 
+                         mtry = Best_mtry) # this is a ranger argument
+                                                       # specification of this value 
+                                                       # corrected errors that previously appeared
+                                                       # no importance value specified
+```
+
+The final model hyperparameters have been set to *bandwidth* = `r best.bw_gwrf_mod2`, *mtry* = `r Best_mtry`, and *ntrees* = `r Best_ntree`.
+
+\newpage
+
+## GWRF Model Evaluation
+
+The models both preform nearly identically because the hyperparameters preform nearly identically. Therefore, the model define by the previous traditional random forest model.
+
+```{r}
+####################
+#### GWRF Models ###
+####################
+# Model 6
+predictions6 = gwrf_mod1$Global.Model$predictions
+mse6 = mean((df$rpl_themes - predictions5)^2)
+rmse6 = sqrt(mse5)
+mae6 = sum(abs(df$rpl_themes - predictions5))/length(predictions5)
+r_squared6 = 1 - sum((df$rpl_themes - predictions5)^2) / sum((df$rpl_themes - mean(df$rpl_themes))^2)
+
+# Model 7
+predictions7 = gwrf_mod2$Global.Model$predictions
+mse7 = mean((df$rpl_themes - predictions6)^2)
+rmse7 = sqrt(mse6)
+mae7 = sum(abs(df$rpl_themes - predictions6))/length(predictions6)
+r_squared7 = 1 - sum((df$rpl_themes - predictions6)^2) / sum((df$rpl_themes - mean(df$rpl_themes))^2)
+
+# Create a data frame with the results
+results_grf = data.frame(
+  Model = c("Model 6", "Model 7"),
+  bw = c(best.bw_gwrf_mod1, best.bw_gwrf_mod2),
+  mtry = c(5, Best_mtry),
+  ntree = c(500,Best_ntree),
+  MAE = c(mae6, mae7),
+  RMSE = c(rmse6, rmse7),
+  R_Squared = c(r_squared6, r_squared7)
+)
+
+# Print the results using kable
+kable(results_grf, caption = "Performance Metrics for Each Model", 
+      digits = 3, align = c("l", "c", "c", "c", "c", "c", "c"))
+
+Best_gwrf =  results_grf %>% filter(Model == "Model 7")
+```
+
+\newpage
+
+# Random Forest Model Comparisons
+
+Model 3 shows a lower RMSE and MAE, indicating that it generally makes smaller errors in prediction. The relatively high $R^2$ value (0.773) suggests that this model explains a significant portion of the variance in the SVI. Overall, Model 4 performs well and is effective in predicting SVI using the selected predictors.
+
+Model 7 has higher RMSE and MAE values, indicating that it makes larger errors on average compared to Model 4, however the magnitude of difference is relatively small between the two models. The $R^2$ is lower (0.773), suggesting that Model 7 explains less variance in the SVI. This could mean that while the Geographically Weighted Random Forest accounts for spatial autocorrelation, it may not perform as well in terms of overall prediction accuracy as the traditional Random Forest.
+
+Model 3 (Traditional Random Forest) outperforms Model 7 (Geographically Weighted Random Forest) in terms of accuracy and explained variance. However, Model 6 is still valuable because it accounts for spatial dependencies. Model 6 might be more appropriate despite its lower overall performance metrics, particularly if the goal is to understand regional variations in the SVI. However, if the focus is purely on predictive accuracy, Model 4 appears to be the better choice.
+
+```{r}
+####################
+#### All Models ####
+####################
+Best_rf = Best_rf %>% 
+  mutate(Bandwidth = NA) %>% 
+  select(Model, Bandwidth, Best_mtry, Best_ntree, RMSE, MAE, R_squared)
+colnames(Best_gwrf) = colnames(Best_rf)
+
+final_results = rbind(Best_rf, Best_gwrf) 
+
+# Print the results using kable
+kable(final_results, caption = "Performance Metrics for Each Model", 
+      digits = 3, align = c("lcccccc"))
+```
+
+## Graphs for the Final Models
+
+### Traditional Random Forest
+
+```{r}
+####################
+#### RF Results ####
+####################
+# Variable Importance
+temp = as.data.frame(model3_results[[Best_Fold]]$model$finalModel$importance)
+colnames(temp) = c("IncMSE", "IncNodePurity")
+temp = tibble::rownames_to_column(temp, "Variable") 
+
+ggplot(temp, aes(x = fct_reorder(Variable, IncMSE), y = IncMSE)) +
+  geom_bar(stat = "identity", fill = "grey") +
+  coord_flip() +  # Flip coordinates for better readability
+  labs(title = "Variable Importance (Increase in %IncMSE)",
+       subtitle = "Traditional Random Forest Model",
+       x = "Variable",
+       y = "Increase in MSE") +
+  theme_bw()
+
+# Generate Partial Dependence Plots and store them as ggplot objects
+rf_mod = model3_results[[Best_Fold]]$model$finalModel
+a = as.data.frame(randomForest::partialPlot(rf_mod, 
+                                            df, e_limeng, plot = FALSE))
+b = as.data.frame(randomForest::partialPlot(model3_results[[Best_Fold]]$model$finalModel, 
+                                            df, e_noveh, plot = FALSE))
+c = as.data.frame(randomForest::partialPlot(model3_results[[Best_Fold]]$model$finalModel, 
+                                            df, e_pov150, plot = FALSE))
+d = as.data.frame(randomForest::partialPlot(model3_results[[Best_Fold]]$model$finalModel, 
+                                            df, e_age65, plot = FALSE))
+
+# Convert the base R plots to ggplot objects
+plot_a = ggplot(a, aes(x, y)) + geom_line() + labs(title = "Partial Dependence of e_limeng")
+plot_b = ggplot(b, aes(x, y)) + geom_line() + labs(title = "Partial Dependence of e_pov150")
+plot_c = ggplot(c, aes(x, y)) + geom_line() + labs(title = "Partial Dependence of e_noveh")
+plot_d = ggplot(d, aes(x, y)) + geom_line() + labs(title = "Partial Dependence of e_munit")
+
+# Arrange the plots in a grid
+gridExtra::grid.arrange(plot_a, plot_b, plot_c, plot_d, nrow = 2, ncol = 2)
+```
+
+\newpage
+
+### Geographically Weighted Random Forest
+
+```{r grf predicted results, include = FALSE}
+####################
+### GWRF Results ###
+####################
+
+# Spatial Distribution of Prediction and Observation Summary Index Values
+svi_df = svi_df %>% 
+  mutate(grf_pred = gwrf_mod2$Global.Model$predictions)
+
+# Predicted 1:1 Plot
+ggplot(svi_df, aes(x = grf_pred, y = rpl_themes)) +
+  geom_point() + 
+  theme_bw() + 
+  geom_abline(slope=1, intercept=0,linetype="dashed",linewidth=0.5) + 
+  geom_smooth(method = "lm", se = FALSE, colour="black",linewidth=0.5) + 
+  labs(x="Observed", y = "Predicted")
+
+a = ggplot(svi_df, aes(fill = rpl_themes)) +
+  geom_sf() + 
+  theme_void() +
+  scale_fill_viridis_c() + 
+  labs(title = "Observed SVI Values") +
+  theme(legend.title=element_blank())
+
+b = ggplot(svi_df, aes(fill = grf_pred)) +
+  geom_sf() + 
+  theme_void() +
+  scale_fill_viridis_c() + 
+  labs(title = "Predicted SVI Values") + 
+  theme(legend.title=element_blank())
+
+ggarrange(a,b, ncol = 2, common.legend = TRUE, legend="bottom")
+```
+
+```{r grf importance results}
+# Global Variable Importance
+temp = as.data.frame(gwrf_mod2$Global.Model$variable.importance)
+colnames(temp) = c("IncMSE")
+temp = tibble::rownames_to_column(temp, "Variable")
+ggplot(temp, aes(x = reorder(Variable, IncMSE), y = IncMSE)) +
+  geom_bar(stat = "identity", fill = "grey") +
+  coord_flip() +  # Flip coordinates for better readability
+  labs(title = "Variable Importance (Increase in %IncMSE)",
+       subtitle = "Geographically Weighted Random Forest Model",
+       x = "Variable",
+       y = "Increase in MSE") +
+  theme_bw()
+
+# Local Variable Importance 
+variable_names = colnames(gwrf_mod2$Local.Variable.Importance)
+plot_lst = list()
+
+# Loop through the names and create maps
+for (var_name in variable_names) {
+  
+  # Generate the map using ggplot2
+  p <- ggplot(map_map, aes_string(fill = var_name)) +
+    geom_sf() +
+    scale_fill_viridis_c() +
+    labs(title = paste(var_name),
+         fill = "Importance") +
+    theme_void()
+  
+  # Save the plot or print it
+  plot_lst[[var_name]] = p
+}
+```
+
+#### Local Variable Importance of SocioEconomic Status Variables 
+
+```{r}
+############ SES Variable
+ggarrange(plot_lst[["e_pov150"]], plot_lst[["e_unemp"]])
+ggarrange(plot_lst[["e_hburd"]], plot_lst[["e_nohsdp"]])
+plot_lst[["e_uninsur"]]
+```
+
+#### Local Variable Importance of Household Characteristics Variables 
+```{r}
+################ Household Characteristics 
+ggarrange(plot_lst[["e_age65"]], plot_lst[["e_age17"]])
+ggarrange(plot_lst[["e_disabl"]], plot_lst[["e_sngpnt"]])
+plot_lst[["e_limeng"]]
+```
+
+#### Local Variable Importance of Racial & Ethnic Minority Status Variables 
+```{r}
+################# Racial & Ethnic Minority Status
+plot_lst[["e_minrty"]]
+```
+
+#### Local Variable Importance of Housing Type & Transportation  Variables 
+```{r}
+################# Housing Type & Transportation 
+ggarrange(plot_lst[["e_munit"]], plot_lst[["e_mobile"]])
+ggarrange(plot_lst[["e_crowd"]], plot_lst[["e_noveh"]])
+plot_lst[["e_groupq"]]
+```
+
+\newpage
+
+# Code Appendix
+
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+```
+
