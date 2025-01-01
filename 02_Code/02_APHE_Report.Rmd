@@ -1,9 +1,6 @@
 ---
 title: | 
-    | **Assessing Relative Agreement in Ranking Rhode Island Census Tracts Across the Social Vulernability Index and the Enviornmental Justice Index**
-subtitle: |
-    |
-    | Thesis for a Master of Public Health, Epidemiology
+    | **Assessing Relative Agreement in Ranking Rhode Island Census Tracts Across the Social Vulernability Index and the Enviornmental Justice Index** 
 author: |
     | Nathan Garcia-Diaz
     |
@@ -32,18 +29,24 @@ $\\$
 
 \newpage
 
-# Purpose Statement 
+# Project Overview 
 
-This purpose of this document is assess the relative agreement of Rhode Island census tracts across the Social Vulnerability Index, Environmental Justice Index, and the Rhode Island Health Equity Index. The index values of interest include the overall vulnerability value and the values associated with sub themes found in all indices. The latter of which will not be compared because there is no consistency in the themes. 
+This purpose of this document is to compare of national indices of place-based vulnerability within the state of Rhode Island. The two indices of interest include the Social Vulnerability Index (SVI) and the Environmental Justice Index (EJI), which are both created by the Centers for Disease Control and Prevention and the Agency for Toxic Substances and Disease Registry. Indexes are composite measures that a produce singular value to rank census tracts with respect to varying definitions of vulnerability. Thus the goal for each index is to identify vulnerable communities in order to guide resources allocation and policy development to improve health and health equity. The SVI measures social vulnerability, which refers to socioeconomic factors that exacerbate the consequences communities face during natural/human-made disasters and infectious disease outbreaks. While EJI measures environmental justice refers to the capacity that all people, regardless of background have equitable protection from environmental hazards and access to environmental benefits. Therefore, SVI identifies communities who are at increased risk who are disproportionately affect during times of crisis due to socioeconomic factors, while the EJI measures the cumulative impact of environmental burden by incorporating environmental exposures. 
 
-In the first half of the document, all indices will be cleaned, and feature engineer the desired quantiles (i.e., 3, 4, 5 & 10). In the second half of the document, the Kappa coefficient will be calculated. The Appendix will include maps of the spatial distribution of the index values.
+The goal of this report is it to quantify the relative agreement of these two different definitions of vulnerability. If the SVI and the EJI align, then these communities face both social and environmental burdens, thus resulting in heightened overall risk of adverse health outcomes. On the other hand of the SVI and EJI do not align then, this would suggest that specific communities are more socially vulnerable without being environmentally burdened, or vice-versa. The distinction between the two would determine the types of interventions required for communities across Rhode Island (i.e., prioritize interventions that mitigate both social and environmental burdens or tailored interventions). 
+
+* **Task 1**: Calculate Weighted Kappa to assess agreement between SVI and EJI across quantiles ranging from tertiles to deciles for Rhode Island census tracts.
+* **Task 2**: Visualize the spatial distribution of index values across the state
+
 
 \newpage
 
 ```{r preparation, include = FALSE}
 ### importing packages
 options(repos = c(CRAN = "https://cran.r-project.org"))
-knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, 
+                      fig.width = 8,   
+                      fig.height = 6)
 
 # define desired packages 
 library(tidyverse)  # general data manipulation
@@ -53,116 +56,399 @@ library(here)       # define top level of project folder
 library(gtools)
 library(psych)
 library(ggpubr)
+library(gridExtra)
+library(lemon)
+library(janitor)
+library(kableExtra)
 # spatial tasks
 library(tigris)     # obtain shp files 
 
 ### loading data 
-svi = read_csv(here::here("01_Data", "SVI_RI_Data.csv"))
-eji = read_csv(here::here("01_Data", "EJI_RI_Data.csv"))
+svi = read_csv(here::here("01_Data", "SVI_RI_Data.csv")) %>% clean_names() %>% 
+  mutate(fips = as.character(fips))
+eji = read_csv(here::here("01_Data", "EJI_RI_Data.csv")) %>% clean_names() %>% 
+   mutate(geoid = as.character(geoid))
+
+## defining themes
+envi_burden = c("e_ozone", "e_pm", "e_dslpm", "e_totcr", "e_npl", "e_tri", "e_tsd", "e_rmp", "e_coal", "e_lead", "e_park", "e_houage", "e_wlkind", "e_rail", "e_road", "e_airprt")
+social_burden = c("ep_minrty", "ep_pov200", "ep_nohsdp", "ep_unemp", "ep_renter", "ep_houbdn", "ep_uninsur", "ep_noint", "ep_age65", "ep_age17", "ep_disabl", "ep_limeng", "ep_groupq", "ep_mobile")
+health_vul = c("ep_asthma", "ep_cancer", "ep_bphigh", "ep_diabetes", "ep_mhlth")
+
+
+# obtaining SPH files for RI tracts
+ri_tracts = tracts(state = "RI", year = 2022, cb = TRUE)
 ```
 
 # Cleaning Indices and Feature Engineering Quantiles
 
 ## Social Vulnerabilty Index Variables
 
-Variables that will be pulled from the SVI include: the summary variable and the 4 theme specific variables (i.e., Socioeconomic Status, Household Characteristics, Racial & Ethinic Minority Status, Housing Type & Transportation). The SVI data contains `r length(unique(svi$FIPS))` census tracts, however the Census Bureau states that [244 tracts exist](https://www.census.gov/geographies/reference-files/2010/geo/state-local-geo-guides-2010/rhode-island.html#:~:text=Rhode%20Island%20has%20244%20census,groups%2C%20and%2025%2C181%20census%20blocks.). 
+Detailed description of 2022 SVI calculations and Documentations is available at [CDC/ATSDR SVI: Data and Documentation Download Website](https://www.atsdr.cdc.gov/placeandhealth/svi/data_documentation_download.html). Variables that will be pulled from the SVI include: the summary variable and the 4 theme specific variables (i.e., Socioeconomic Status, Household Characteristics, Racial & Ethinic Minority Status, Housing Type & Transportation). The figure below illustrates the American Community Survey, 2018-2022 (5-year) variables used for calculating the SVI. 
 
-```{r svi cleaning,  include = FALSE}
+![Organizational Structure of SVI](/Users/diazg/Documents/GitHub/MPH-Thesis_GeographicalRandomForest/04_Others/SVI_Values.png){ width=400px height=300px }
+
+Overview of Methods: 
+
+* Data Cleaning:
+    * Selected relevant columns: FIPS code, location, and SVI theme variables (prefix rpl_).
+    * Filtered out rows with invalid values (-999) in the SVI themes to ensure data integrity.
+        * Cells with values of -999 where dropped because this means that the value was unavailable from the original census data or we could not calculate a derived value because of unavailable Census data.
+
+* Exploratory Data Analysis (EDA):
+    * Generated summary statistics for SVI theme variables to provide an overview of data distribution, indicating relative consistency among the values.
+    * Visualize the spatial distribution of the variables 
+# Quantile Calculation:
+    * Developed a function to compute quantiles for the rpl_themes variable, calculating thirds, fourths, fifths, sixths, sevenths, eighths, ninths, and tenths.
+    * Applied the quantile calculations to categorize SVI values into distinct groups based on their respective quantile thresholds.
+    * Converted the resulting categorical variables into factors for subsequent analysis.
+    
+    
+```{r svi cleaning, include=FALSE}
 #### Cleaning 
-df_svi = svi %>% select(FIPS, LOCATION, starts_with("RPL_")) 
-
+df_svi = svi %>% select(fips, location, starts_with("rpl_")) 
+# dropping variables that have -999 as the value 
 df_svi = df_svi %>% 
-   filter_at(vars(RPL_THEMES, RPL_THEME1, RPL_THEME2, 
-                  RPL_THEME3, RPL_THEME4), 
+   filter_at(vars(rpl_themes, rpl_theme1, rpl_theme2, 
+                  rpl_theme3, rpl_theme4), 
              any_vars(. != -999))
 
 #### Brief EDA - no need for graphics since the table illustrates 
 # the values are relatively the same
-df_svi %>% select(starts_with("RPL_")) %>% summary()
+df_svi %>% select(starts_with("rpl_")) %>% summary()
 
 #### Creating Quantiles 
 generate_quantiles = function(data, column_name) {
+  # Compute quantiles for different levels
   quantiles = list(
-    thirds = quantcut(data[[column_name]], q = 3, na.rm = TRUE),
-    fourths = quantcut(data[[column_name]], q = 4, na.rm = TRUE),
-    fifths = quantcut(data[[column_name]], q = 5, na.rm = TRUE),
-    tenths = quantcut(data[[column_name]], q = 10, na.rm = TRUE)
+    thirds = quantile(data[[column_name]], probs = c(0, 1/3, 2/3, 1), na.rm = TRUE),
+    fourths = quantile(data[[column_name]], probs = c(0, 1/4, 2/4, 3/4, 1), na.rm = TRUE),
+    fifths = quantile(data[[column_name]], probs = c(0, 1/5, 2/5, 3/5, 4/5, 1), na.rm = TRUE),
+    sixths = quantile(data[[column_name]], probs = c(0, 1/6, 2/6, 3/6, 4/6, 5/6, 1), na.rm = TRUE),
+    sevenths = quantile(data[[column_name]], probs = c(0, 1/7, 2/7, 3/7, 4/7, 5/7, 6/7, 1), na.rm = TRUE),
+    eighths = quantile(data[[column_name]], probs = c(0, 1/8, 2/8, 3/8, 4/8, 5/8, 6/8, 7/8, 1), na.rm = TRUE),
+    ninths = quantile(data[[column_name]], probs = c(0, 1/9, 2/9, 3/9, 4/9, 5/9, 6/9, 7/9, 8/9, 1), na.rm = TRUE),
+    tenths = quantile(data[[column_name]], probs = c(0, 1/10, 2/10, 3/10, 4/10, 5/10, 6/10, 7/10, 8/10, 9/10, 1), na.rm = TRUE)
   )
-    return(quantiles)
+  
+  # Return the list of quantiles
+  return(quantiles)
 }
 
-# List of columns to apply quantile calculations
-columns = df_svi %>% select(starts_with("RPL_")) %>% colnames()
-
 # Apply the quantile function to each column and bind the results
-quantile_results = as.data.frame(lapply(columns, function(col) generate_quantiles(df_svi, col)))
+svi_quantiles = generate_quantiles(df_svi, "rpl_themes")
 
-# join the two dataframes together 
-df_svi = cbind(df_svi, quantile_results)
+
+svi_quantiles = df_svi %>% 
+  select(fips, location, rpl_themes) %>% 
+  mutate(
+    thirds = case_when(
+        rpl_themes <= svi_quantiles$thirds[2] ~ 1,  # Below or equal to 33.33%
+        rpl_themes <= svi_quantiles$thirds[3] ~ 2,  # Between 33.33% and 66.67%
+        rpl_themes <= svi_quantiles$thirds[4] ~ 3   # Above 66.67%
+        ), 
+    fourths = case_when(
+        rpl_themes <= svi_quantiles$fourths[2] ~ 1,
+        rpl_themes <= svi_quantiles$fourths[3] ~ 2,
+        rpl_themes <= svi_quantiles$fourths[4] ~ 3,
+        rpl_themes <= svi_quantiles$fourths[5] ~ 4), 
+    fifths = case_when(
+        rpl_themes <= svi_quantiles$fifths[2] ~ 1,
+        rpl_themes <= svi_quantiles$fifths[3] ~ 2,
+        rpl_themes <= svi_quantiles$fifths[4] ~ 3,
+        rpl_themes <= svi_quantiles$fifths[5] ~ 4, 
+        rpl_themes <= svi_quantiles$fifths[6] ~ 5),
+    sixths = case_when(
+        rpl_themes <= svi_quantiles$sixths[2] ~ 1,
+        rpl_themes <= svi_quantiles$sixths[3] ~ 2,
+        rpl_themes <= svi_quantiles$sixths[4] ~ 3,
+        rpl_themes <= svi_quantiles$sixths[5] ~ 4, 
+        rpl_themes <= svi_quantiles$sixths[6] ~ 5, 
+        rpl_themes <= svi_quantiles$sixths[7] ~ 6),
+    sevenths = case_when(
+        rpl_themes <= svi_quantiles$sevenths[2] ~ 1,
+        rpl_themes <= svi_quantiles$sevenths[3] ~ 2,
+        rpl_themes <= svi_quantiles$sevenths[4] ~ 3,
+        rpl_themes <= svi_quantiles$sevenths[5] ~ 4, 
+        rpl_themes <= svi_quantiles$sevenths[6] ~ 5, 
+        rpl_themes <= svi_quantiles$sevenths[7] ~ 6, 
+        rpl_themes <= svi_quantiles$sevenths[8] ~ 7),
+    eighths = case_when(
+        rpl_themes <= svi_quantiles$eighths[2] ~ 1,
+        rpl_themes <= svi_quantiles$eighths[3] ~ 2,
+        rpl_themes <= svi_quantiles$eighths[4] ~ 3,
+        rpl_themes <= svi_quantiles$eighths[5] ~ 4, 
+        rpl_themes <= svi_quantiles$eighths[6] ~ 5, 
+        rpl_themes <= svi_quantiles$eighths[7] ~ 6, 
+        rpl_themes <= svi_quantiles$eighths[8] ~ 7,
+        rpl_themes <= svi_quantiles$eighths[9] ~ 8), 
+    ninths = case_when(
+        rpl_themes <= svi_quantiles$ninths[2] ~ 1,
+        rpl_themes <= svi_quantiles$ninths[3] ~ 2,
+        rpl_themes <= svi_quantiles$ninths[4] ~ 3,
+        rpl_themes <= svi_quantiles$ninths[5] ~ 4, 
+        rpl_themes <= svi_quantiles$ninths[6] ~ 5, 
+        rpl_themes <= svi_quantiles$ninths[7] ~ 6, 
+        rpl_themes <= svi_quantiles$ninths[8] ~ 7,
+        rpl_themes <= svi_quantiles$ninths[9] ~ 8, 
+        rpl_themes <= svi_quantiles$ninths[10] ~ 9),
+    tenths = case_when(
+        rpl_themes <= svi_quantiles$tenths[2] ~ 1,
+        rpl_themes <= svi_quantiles$tenths[3] ~ 2,
+        rpl_themes <= svi_quantiles$tenths[4] ~ 3,
+        rpl_themes <= svi_quantiles$tenths[5] ~ 4, 
+        rpl_themes <= svi_quantiles$tenths[6] ~ 5, 
+        rpl_themes <= svi_quantiles$tenths[7] ~ 6, 
+        rpl_themes <= svi_quantiles$tenths[8] ~ 7,
+        rpl_themes <= svi_quantiles$tenths[9] ~ 8, 
+        rpl_themes <= svi_quantiles$tenths[11] ~ 10)
+    )
+
+names = svi_quantiles %>% select(-fips, -rpl_themes, -location) %>% colnames()
+
+svi_quantiles = svi_quantiles %>% 
+  mutate(across(any_of(names), ~as.factor(.)))
 ```
+\newpage
+```{r}
+svi_quantiles %>% 
+  reframe(
+    Minimum = min(rpl_themes, na.rm = TRUE), 
+    "1st Quartile" =  quantile(rpl_themes, 0.25, na.rm = TRUE),
+    Median = median(rpl_themes, na.rm = TRUE), 
+    Mean = mean(rpl_themes, na.rm = TRUE),
+    "3rd Quartile" = quantile(rpl_themes, 0.75, na.rm = TRUE),
+    Maximum = max(rpl_themes, na.rm = TRUE)
+  ) %>% 
+  pivot_longer(cols = everything(), names_to = "Statistic", values_to = "Value") %>%
+  kable(digits = 2, caption = "5 Point Summary of SVI Index Values")
+```
+
+```{r}
+# joining data 
+svi_map = left_join(ri_tracts, svi_quantiles, join_by(GEOID == fips))
+
+# making maps 
+ggplot(data = svi_map, aes(fill = rpl_themes)) + 
+  geom_sf(lwd = 0.01) + 
+  theme_void() + 
+  labs(title =  "Map 1: Spatial Distribution of Summary SVI Values, 2022", fill = "Summary SVI Values") +
+  scale_fill_viridis_c()
+```
+\newpage
 
 ## Enviornmental Justice Index
 
-The variables pulled from the EJI include: the overall summary value and the EJI 3 theme specific variables (i.e., Environmental Burden, Social Vulnerability, Health Vulnerability). The EJI contains `r length(unique(eji$GEOID))` census tracts, however the Census Bureau states that [244 tracts exist](https://www.census.gov/geographies/reference-files/2010/geo/state-local-geo-guides-2010/rhode-island.html#:~:text=Rhode%20Island%20has%20244%20census,groups%2C%20and%2025%2C181%20census%20blocks.).
+Detailed description of 2022 EJI calculations and Documentations is available at [CDC/ATSDR SVI:EJI Technical Documentation Website](https://www.atsdr.cdc.gov/placeandhealth/eji/technical_documentation.html).  The variables extracted from the EJI include the overall summary value and three EJI theme-specific variables: Environmental Burden, Social Vulnerability, and Health Vulnerability. Unlike the SVI, which calculates index values within each state, the state-level EJI values are calculated using the United States as a whole as the reference group. To illustrate this concept, consider the following quote from the EJI Data Download page: "For example, an EJI ranking of 0.85 signifies that 85% of tracts in the nation likely experience less severe cumulative impacts from environmental burden than the tract of interest, and that 15% of tracts in the nation likely experience more severe cumulative impacts from environmental burden." To ensure consistency when comparing the SVI and EJI, the EJI values needed to be recalculated so that the index values are aligned.
 
-```{r eji cleaning, include = FALSE}
-#### Cleaning 
-df_eji = eji %>% 
-  select(GEOID, Location, RPL_EJI, RPL_EBM, RPL_SVM, RPL_HVM) %>% 
-  rename(FIPS = GEOID)
+![Organizational Structure of EJI](/Users/diazg/Documents/GitHub/MPH-Thesis_GeographicalRandomForest/01_Data/EJI_organizational_structure.png){ width=400px height=500px }
 
-# determining NA's
-df_eji = df_eji %>% 
-   filter_at(vars(starts_with("RPL_")), any_vars(!is.na(.)))
+Overview of Methods: 
 
-#### Brief EDA - no need for graphics since the table illustrates 
-# List of columns to apply quantile calculations
-df_eji %>% select(starts_with("RPL_")) %>% summary()
+* Module 1 & 2: Environmental Burden - calculate percentile ranks 
+* Module 3: Health Vulnerability - calculate percentile ranks 
+    * Created threshold variables for asthma, cancer, high blood pressure, diabetes, and mental health, based on quantiles of each health variable.
+    * Summed the threshold flags to obtain a flag_score and computed the health vulnerability score (rpl_mod3) by multiplying the flag_score by 0.20.
+* Combining Modules:
+    * Merged the results from Module 1, Module 2, and Module 3 using left joins on geoid.
+    * Calculated a total rank score by summing the numeric columns across the merged dataset by calculating percentile ranks
+* Quantile Generation - Generated quantiles for the rpl_eji scores and created categorical variables (thirds, fourths, fifths, etc.) based on the computed quantiles.
 
-# List of columns to apply quantile calculations
-columns = df_eji %>% select(starts_with("RPL_")) %>% colnames()
+```{r}
+module_1 = eji %>% 
+  select(geoid, location, any_of(envi_burden)) %>% 
+  mutate(across(where(is.numeric), ~percent_rank(.), .names = "percentile_{.col}")) %>% 
+  select(geoid, location, starts_with("percentile_")) %>% 
+  rowwise() %>%
+  mutate(percentile_rank_sum = sum(c_across(where(is.numeric)))) %>%
+  ungroup() %>% 
+  mutate(rpl_mod1 = round(percent_rank(percentile_rank_sum), 4)) %>% 
+  select(geoid, location, rpl_mod1) 
+
+module_2 = eji %>% 
+  select(geoid, location, any_of(social_burden)) %>% 
+  mutate(across(where(is.numeric), ~percent_rank(.), .names = "percentile_{.col}")) %>% 
+  select(geoid, location, starts_with("percentile_")) %>% 
+  rowwise() %>%
+  mutate(percentile_rank_sum = sum(c_across(where(is.numeric)))) %>%
+  ungroup() %>% 
+  mutate(rpl_mod2 = round(percent_rank(percentile_rank_sum), 4)) %>% 
+  select(geoid, location, rpl_mod2)
+
+# Example usage with eji dataset and specified health vulnerability columns
+module_3 = eji %>% 
+  select(geoid, location, any_of(health_vul)) %>% 
+  mutate(threshold_asthma = cut(ep_asthma,
+                                breaks = quantile(ep_asthma, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE),
+                                include.lowest = TRUE,
+                                labels = c(0, 0, 1)), 
+         threshold_cancer = cut(ep_cancer,
+                                breaks = quantile(ep_cancer, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE),
+                                include.lowest = TRUE,
+                                labels = c(0, 0, 1)), 
+         threshold_bphigh = cut(ep_bphigh,
+                                breaks = quantile(ep_bphigh, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE),
+                                include.lowest = TRUE,
+                                labels = c(0, 0, 1)), 
+         threshold_diabetes = cut(ep_diabetes,
+                                breaks = quantile(ep_diabetes, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE),
+                                include.lowest = TRUE,
+                                labels = c(0, 0, 1)), 
+         threshold_mhlth = cut(ep_mhlth,
+                                breaks = quantile(ep_mhlth, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE),
+                                include.lowest = TRUE,
+                                labels = c(0, 0, 1))) %>% 
+  select(geoid, location, starts_with("threshold_")) %>% 
+  mutate(across(starts_with("threshold_"), ~ as.numeric(as.character(.)))) %>% 
+  rowwise() %>%
+  mutate(flag_score = sum(c_across(where(is.numeric)))) %>%
+  ungroup() %>% 
+  mutate(rpl_mod3 = round(flag_score * 0.20, 2)) %>% 
+  select(geoid, location, rpl_mod3)
+
+df_eji = module_1 %>% 
+  left_join(module_2, by = "geoid") %>% 
+  left_join(module_3, by = "geoid") %>% 
+  rowwise() %>%
+  mutate(eji_sum_rank = sum(c_across(where(is.numeric)))) %>%
+  ungroup() %>% 
+  mutate(rpl_eji = round(percent_rank(eji_sum_rank),4)) %>% 
+  select(-eji_sum_rank)
 
 # Apply the quantile function to each column and bind the results
-quantile_results = as.data.frame(lapply(columns, function(col) generate_quantiles(df_eji, col)))
+eji_quantiles = generate_quantiles(df_eji, "rpl_eji")
 
-# join the two dataframes together 
-df_eji = cbind(df_eji, quantile_results)
+
+eji_quantiles = df_eji %>% 
+  select(geoid, location, rpl_eji) %>% 
+  mutate(
+    thirds = case_when(
+        rpl_eji <= eji_quantiles$thirds[2] ~ 1,  # Below or equal to 33.33%
+        rpl_eji <= eji_quantiles$thirds[3] ~ 2,  # Between 33.33% and 66.67%
+        rpl_eji <= eji_quantiles$thirds[4] ~ 3   # Above 66.67%
+        ), 
+    fourths = case_when(
+        rpl_eji <= eji_quantiles$fourths[2] ~ 1,
+        rpl_eji <= eji_quantiles$fourths[3] ~ 2,
+        rpl_eji <= eji_quantiles$fourths[4] ~ 3,
+        rpl_eji <= eji_quantiles$fourths[5] ~ 4), 
+    fifths = case_when(
+        rpl_eji <= eji_quantiles$fifths[2] ~ 1,
+        rpl_eji <= eji_quantiles$fifths[3] ~ 2,
+        rpl_eji <= eji_quantiles$fifths[4] ~ 3,
+        rpl_eji <= eji_quantiles$fifths[5] ~ 4, 
+        rpl_eji <= eji_quantiles$fifths[6] ~ 5),
+    sixths = case_when(
+        rpl_eji <= eji_quantiles$sixths[2] ~ 1,
+        rpl_eji <= eji_quantiles$sixths[3] ~ 2,
+        rpl_eji <= eji_quantiles$sixths[4] ~ 3,
+        rpl_eji <= eji_quantiles$sixths[5] ~ 4, 
+        rpl_eji <= eji_quantiles$sixths[6] ~ 5, 
+        rpl_eji <= eji_quantiles$sixths[7] ~ 6),
+    sevenths = case_when(
+        rpl_eji <= eji_quantiles$sevenths[2] ~ 1,
+        rpl_eji <= eji_quantiles$sevenths[3] ~ 2,
+        rpl_eji <= eji_quantiles$sevenths[4] ~ 3,
+        rpl_eji <= eji_quantiles$sevenths[5] ~ 4, 
+        rpl_eji <= eji_quantiles$sevenths[6] ~ 5, 
+        rpl_eji <= eji_quantiles$sevenths[7] ~ 6, 
+        rpl_eji <= eji_quantiles$sevenths[8] ~ 7),
+    eighths = case_when(
+        rpl_eji <= eji_quantiles$eighths[2] ~ 1,
+        rpl_eji <= eji_quantiles$eighths[3] ~ 2,
+        rpl_eji <= eji_quantiles$eighths[4] ~ 3,
+        rpl_eji <= eji_quantiles$eighths[5] ~ 4, 
+        rpl_eji <= eji_quantiles$eighths[6] ~ 5, 
+        rpl_eji <= eji_quantiles$eighths[7] ~ 6, 
+        rpl_eji <= eji_quantiles$eighths[8] ~ 7,
+        rpl_eji <= eji_quantiles$eighths[9] ~ 8), 
+    ninths = case_when(
+        rpl_eji <= eji_quantiles$ninths[2] ~ 1,
+        rpl_eji <= eji_quantiles$ninths[3] ~ 2,
+        rpl_eji <= eji_quantiles$ninths[4] ~ 3,
+        rpl_eji <= eji_quantiles$ninths[5] ~ 4, 
+        rpl_eji <= eji_quantiles$ninths[6] ~ 5, 
+        rpl_eji <= eji_quantiles$ninths[7] ~ 6, 
+        rpl_eji <= eji_quantiles$ninths[8] ~ 7,
+        rpl_eji <= eji_quantiles$ninths[9] ~ 8, 
+        rpl_eji <= eji_quantiles$ninths[10] ~ 9),
+    tenths = case_when(
+        rpl_eji <= eji_quantiles$tenths[2] ~ 1,
+        rpl_eji <= eji_quantiles$tenths[3] ~ 2,
+        rpl_eji <= eji_quantiles$tenths[4] ~ 3,
+        rpl_eji <= eji_quantiles$tenths[5] ~ 4, 
+        rpl_eji <= eji_quantiles$tenths[6] ~ 5, 
+        rpl_eji <= eji_quantiles$tenths[7] ~ 6, 
+        rpl_eji <= eji_quantiles$tenths[8] ~ 7,
+        rpl_eji <= eji_quantiles$tenths[9] ~ 8, 
+        rpl_eji <= eji_quantiles$tenths[11] ~ 10)
+    )
+
+names = eji_quantiles %>% select(-geoid, -rpl_eji, -location) %>% colnames()
+
+eji_quantiles = eji_quantiles %>% 
+  mutate(across(any_of(names), ~as.factor(.)))
+
+eji_quantiles = eji_quantiles[complete.cases(eji_quantiles), ]
 ```
 
 
+```{r}
+eji_quantiles %>% 
+  reframe(
+    Minimum = min(rpl_eji, na.rm = TRUE), 
+    "1st Quartile" =  quantile(rpl_eji, 0.25, na.rm = TRUE),
+    Median = median(rpl_eji, na.rm = TRUE), 
+    Mean = mean(rpl_eji, na.rm = TRUE),
+    "3rd Quartile" = quantile(rpl_eji, 0.75, na.rm = TRUE),
+    Maximum = max(rpl_eji, na.rm = TRUE)
+  ) %>% 
+  pivot_longer(cols = everything(), names_to = "Statistic", values_to = "Value") %>%
+  kable(digits = 2, caption = "5 Point Summary of EJI  Index Values")
+```
+```{r, include = FALSE}
+# obtaining SPH files for RI tracts
+ri_tracts = tracts(state = "RI", year = 2010, cb = TRUE)
+
+# removing excess characters to allow for join  
+ri_tracts$GEO_ID = str_remove(ri_tracts$GEO_ID, "^1400000US") 
+```
+
+```{r}
+# joining data 
+eji_map = left_join(x = ri_tracts, y = eji_quantiles, join_by(GEO_ID == geoid))
+
+# making maps 
+ggplot(data = eji_map, aes(fill = rpl_eji)) + 
+  geom_sf(lwd = 0.01) + 
+  theme_void() + 
+  labs(title =  "Map 2: Spatial Distribution of Summary EJI Values, 2022", fill = "Summary SVI Values") +
+  scale_fill_viridis_c()
+```
+\newpage 
 ## Identification of the Missing Census Tracts 
 
-The missing census tracts stem from the indices using two different sets of FIPS codes, hence different both census use different spatial definitions. This is evident by the fact that the two maps of the summary index values found in Appendix A. The EJI uses 2010 FIPS codes, while the SVI uses 2022 FIPS codes. Even though the visual difference between the two indices occurs from the larger EJI tracts contains two smaller current SVI tracts, the smaller SVI summary values cannot be combined because they represent percentile ranks. Attempts to combine and calculate weighted Cohen's kappa would lead to incorrect or inaccurate results.
+The Economic Justice Index (EJI) uses 2010 FIPS codes, whereas the Social Vulnerability Index (SVI) employs 2022 FIPS codes, resulting in misalignment across spatial definitions. While the larger EJI tracts encompass two smaller current SVI tracts, the smaller SVI summary values cannot be combined due to their representation as percentile ranks, making attempts to calculate weighted Cohen's kappa potentially incorrect or inaccurate. One cannot simply sum the individual estimates used to calculate the Economic Justice Index (EJI) because the index is based on modeled estimates that may have different underlying distributions and variances, potentially introducing additional bias. Summing these values without accounting for their unique modeling contexts could distort the final index values and lead to inaccurate representations of the underlying socioeconomic conditions.
 
-```{r missing census tracts, echo = FALSE}
-# change character type
-df_svi = df_svi %>% mutate(FIPS = as.character(FIPS))
-df_eji = df_eji %>% mutate(FIPS = as.character(FIPS))
-
+```{r}
 # 12 census tracts appear in the svi but do not appear in the eji
 print("12 Census Tracts that appear in the SVI but do not appear in the EJI")
-anti_join(x = df_svi, y = df_eji, by = c("FIPS")) %>% select(FIPS, LOCATION)
+anti_join(x = svi_quantiles, y = eji_quantiles, by = join_by(fips == geoid)) %>% select(fips, location)
 
 # 6 census tracts appear in the eji but do not appear in the svi
 print("6 Census Tracts that appear in the EJI but do not appear in the SVI")
-anti_join(x = df_eji, y = df_svi, by = c("FIPS")) %>% select(FIPS, Location)
+anti_join(x = eji_quantiles, y = svi_quantiles, by = join_by(geoid == fips)) %>% select(geoid, location)
 ```
 
 \newpage
 
 # Calculating Kappa Coefficient for Overall Indices Value 
 
-Weighted Cohen's kappa is a measure of the agreement between two ordinarily scaled samples, this is the variable estimate of interest because the samples are ordinal. 
+Weighted Cohen's kappa is a measure of the agreement between two ordinarily scaled samples, this is the variable estimate of interest because the samples are ordinal. Assumptions for Weighted Cohen's Kappa include:
 
-Assumptions for Weighted Cohen's Kappa include:
-
-1. Your data should met the following assumptions for computing weighted kappa.
-2. You have two outcome categorical variables, which should be ordinal
-3. The two outcome variables should have exactly the same categories
-4. You have paired observations; each subject is categorized twice by two independent raters or methods.
-5. The same two raters are used for all participants.
-
-Given the second assumption an inner join must be preformed to ensure that all paired observations have been categorized twice by the two indices. 
+1. You have two outcome categorical variables, which should be ordinal
+2. The two outcome variables should have exactly the same categories
+3. You have paired observations; each subject is categorized twice by two independent raters or methods.
+4. The same two raters are used for all participants.
 
 Statistical Hypothesis include:
 
@@ -177,13 +463,17 @@ The following interpretations will be implemented:
 
 Joseph L. Fleiss, Myunghee Cho Paik, Bruce Levin. 2003. Statistical Methods for Rates and Proportions. 3rd ed. John Wiley; Sons, Inc.
 
-```{r kappa, echo = FALSE}
-df = inner_join(x = df_svi, y = df_eji, by = c("FIPS"))
+```{r kappa}
+df = inner_join(svi_quantiles, y = eji_quantiles, by = join_by(fips == geoid))
 
 a = cohen.kappa(cbind(df$fourths.x, df$fourths.y)) 
 b = cohen.kappa(cbind(df$fourths.x, df$fourths.y))
 c = cohen.kappa(cbind(df$fifths.x, df$fifths.y))
-d = cohen.kappa(cbind(df$tenths.x, df$tenths.y))
+d = cohen.kappa(cbind(df$sixths.x, df$sixths.y))
+e = cohen.kappa(cbind(df$sevenths.x, df$sevenths.y))
+f = cohen.kappa(cbind(df$eighths.x, df$eighths.y))
+g = cohen.kappa(cbind(df$ninths.x, df$ninths.y))
+h = cohen.kappa(cbind(df$tenths.x, df$tenths.y))
 ```
 
 
@@ -192,36 +482,21 @@ d = cohen.kappa(cbind(df$tenths.x, df$tenths.y))
 |Terciles | `r round(a$confid[2,2], 2)` (`r round(a$confid[2,1], 2)`, `r round(a$confid[2,3], 2)`) |
 |Quartiles| `r round(b$confid[2,2], 2)` (`r round(b$confid[2,1], 2)`, `r round(b$confid[2,3], 2)`) |
 |Quintiles| `r round(c$confid[2,2], 2)` (`r round(c$confid[2,1], 2)`, `r round(c$confid[2,3], 2)`) |
-|Deciles  | `r round(d$confid[2,2], 2)` (`r round(c$confid[2,1], 2)`, `r round(c$confid[2,3], 2)`) |
+|Sextiles | `r round(d$confid[2,2], 2)` (`r round(d$confid[2,1], 2)`, `r round(d$confid[2,3], 2)`) |
+|Septiles | `r round(e$confid[2,2], 2)` (`r round(e$confid[2,1], 2)`, `r round(e$confid[2,3], 2)`) |
+|Octiles  | `r round(f$confid[2,2], 2)` (`r round(f$confid[2,1], 2)`, `r round(f$confid[2,3], 2)`) |
+|Nineths  | `r round(g$confid[2,2], 2)` (`r round(g$confid[2,1], 2)`, `r round(g$confid[2,3], 2)`) |
+|Deciles  | `r round(h$confid[2,2], 2)` (`r round(h$confid[2,1], 2)`, `r round(h$confid[2,3], 2)`) |
 
-There is good aggreement across all indices regardless of the quantiles being used. 
+
+There is excellent agreement across all indices regardless of the quantiles being used, index agreement doe not change as when increasing the number of quantiles. 
 
 \newpage
 
 # Appendix A - Spatial Distribution of Index Values 
 
-```{r spatial prepation, include = FALSE}
-# obtaining SPH files for RI tracts
-tracts = tracts(state = "RI", year = 2022, cb = TRUE)
-```
-
-## SVI Maps
-
-```{r svi map, echo = FALSE}
-# joining data 
-svi_map = left_join(tracts, df_svi, by = c("GEOID" = "FIPS"))
-
-# making maps 
-ggplot(data = svi_map, aes(fill = RPL_THEMES)) + 
-  geom_sf(lwd = 0.01) + 
-  theme_void() + 
-  labs(title =  "Spatial Distribution of Summary SVI Values, 2022", fill = "Summary SVI Values") +
-  scale_fill_viridis_b()
-```
-
-\newpage
-
-```{r, echo = FALSE}
+## SVI Maps Across Tercile and Decile
+```{r}
 a = ggplot(data = svi_map, aes(fill = thirds)) + 
   geom_sf(lwd = 0.1) + 
   theme_void() + 
@@ -229,63 +504,21 @@ a = ggplot(data = svi_map, aes(fill = thirds)) +
        fill = "Summary Values") +
   scale_fill_viridis_d()
 
-b = ggplot(data = svi_map, aes(fill = fourths)) + 
-  geom_sf(lwd = 0.1) + 
-  theme_void() + 
-  labs(title = "Quartiles",
-       fill = "Summary Values") +
-  scale_fill_viridis_d()
-
-c = ggplot(data = svi_map, aes(fill = fifths)) + 
-  geom_sf(lwd = 0.1) + 
-  theme_void() + 
-  labs(title = "Quintiles",
-       fill = "Summary Values") +
-  scale_fill_viridis_d()
-
-d = ggplot(data = svi_map, aes(fill = tenths)) + 
+b = ggplot(data = svi_map, aes(fill = tenths)) + 
   geom_sf(lwd = 0.1) + 
   theme_void() + 
   labs(title = "Deciles",
        fill = "Summary Values") +
   scale_fill_viridis_d()
-  
-  #scale_fill_okabe_ito()
-  #scale_fill_gradient2(low = "#0072B2", mid = "#56B4E9", high = "#E69F00", midpoint=mid) 
 
-plt_svi = ggarrange(a,b,c,d, ncol = 2, nrow = 2)
-annotate_figure(plt_svi, top = text_grob("Quantile Maps of Social Vulnerability Index, 2022", 
+plt_svi = ggarrange(a,b, ncol = 2)
+annotate_figure(plt_svi, top = text_grob("Map 3: Quantile Maps of Social Vulnerability Index, 2022", 
                 face = "bold", size = 14))
 ```
-\newpage 
 
-## EJI Maps
+## EJI Maps Across Tercile and Decile
 
-```{r, include = FALSE}
-# obtaining SPH files for RI tracts
-tracts = tracts(state = "RI", year = 2010, cb = TRUE)
-
-# removing excess characters to allow for join  
-tracts$GEO_ID = str_remove(tracts$GEO_ID, "^1400000US")
-```
-
-```{r eji map, echo = FALSE}
-# change character type
-df_eji = df_eji %>% mutate(FIPS = as.character(FIPS))
-# joining data 
-eji_map = left_join(tracts, df_eji, by = c("GEO_ID" = "FIPS"))
-
-# making maps 
-ggplot(data = eji_map, aes(fill = RPL_EJI)) + 
-  geom_sf(lwd = 0.01) + 
-  theme_void() + 
-  labs(title =  "Spatial Distribution of Summary SVI Values, 2022", fill = "Summary SVI Values") +
-  scale_fill_viridis_b()
-```
-
-\newpage 
-
-```{r, echo = FALSE}
+```{r}
 a = ggplot(data = eji_map, aes(fill = thirds)) + 
   geom_sf(lwd = 0.1) + 
   theme_void() + 
@@ -293,29 +526,15 @@ a = ggplot(data = eji_map, aes(fill = thirds)) +
        fill = "Summary Values") +
   scale_fill_viridis_d()
 
-b = ggplot(data = eji_map, aes(fill = fourths)) + 
-  geom_sf(lwd = 0.1) + 
-  theme_void() + 
-  labs(title = "Quartiles",
-       fill = "Summary Values") +
-  scale_fill_viridis_d()
-
-c = ggplot(data = eji_map, aes(fill = fifths)) + 
-  geom_sf(lwd = 0.1) + 
-  theme_void() + 
-  labs(title = "Quintiles",
-       fill = "Summary Values") +
-  scale_fill_viridis_d()
-
-d = ggplot(data = eji_map, aes(fill = tenths)) + 
+b = ggplot(data = eji_map, aes(fill = tenths)) + 
   geom_sf(lwd = 0.1) + 
   theme_void() + 
   labs(title =  "Deciles",
        fill = "Summary Values") +
   scale_fill_viridis_d()
 
-plt_eji = ggarrange(a,b,c,d, ncol = 2, nrow = 2)
-annotate_figure(plt_eji, top = text_grob("Quantile Maps of Enviornmental Justice Index, 2022", size = 14))
+plt_eji = ggarrange(a,b, ncol = 2)
+annotate_figure(plt_eji, top = text_grob("Map 4: Quantile Maps of Enviornmental Justice Index, 2022", size = 14))
 ```
 
 \newpage
@@ -324,59 +543,85 @@ annotate_figure(plt_eji, top = text_grob("Quantile Maps of Enviornmental Justice
 
 The SVI contains 4 themes, and the distribution of those themes are shown below. Quantiles of these values will be made available upon request. 
 
-```{r, echo = FALSE}
-a = ggplot(data = svi_map, aes(fill = RPL_THEME1)) + 
-  geom_sf(lwd = 0.1) + 
+```{r}
+# join theme values to svi_map
+df_svi = df_svi %>% select(fips, rpl_theme1:rpl_theme4)
+svi_map = left_join(svi_map, df_svi, by = join_by(GEOID == fips))
+# make maps
+a = ggplot(data = svi_map, aes(fill = rpl_theme1)) + 
+  geom_sf(lwd = 0.01) + 
   theme_void() + 
+  theme(plot.title = element_text(size = 8)) +
   labs(title =  "Socioeconomic Status", fill = "Summary SVI Values") +
   scale_fill_viridis_b()
 
-b = ggplot(data = svi_map, aes(fill = RPL_THEME2)) + 
-  geom_sf(lwd = 0.1) + 
+b = ggplot(data = svi_map, aes(fill = rpl_theme2)) + 
+  geom_sf(lwd = 0.01) + 
   theme_void() + 
+  theme(plot.title = element_text(size = 8)) +
   labs(title =  "Household Characteristics", fill = "Summary SVI Values") +
   scale_fill_viridis_b()
 
-c = ggplot(data = svi_map, aes(fill = RPL_THEME1)) + 
-  geom_sf(lwd = 0.1) + 
+c = ggplot(data = svi_map, aes(fill = rpl_theme3)) + 
+  geom_sf(lwd = 0.01) + 
   theme_void() + 
+  theme(plot.title = element_text(size = 8)) +
   labs(title =  "Racial & Ethnic Minority Status", fill = "Summary SVI Values") +
   scale_fill_viridis_b()
 
-d = ggplot(data = svi_map, aes(fill = RPL_THEME2)) + 
-  geom_sf(lwd = 0.1) + 
+d = ggplot(data = svi_map, aes(fill = rpl_theme4)) + 
+  geom_sf(lwd = 0.01) + 
   theme_void() + 
+  theme(plot.title = element_text(size = 8)) +
   labs(title =  "Housing Type & Transportation", fill = "Summary SVI Values") +
   scale_fill_viridis_b()
-
-plt_svi_themes = ggarrange(a,b,c,d, ncol = 2, nrow = 2)
-annotate_figure(plt_svi_themes, top = text_grob("Maps of Social Vulnerability Index Themes, 2022", size = 14))
+# join maps on one shared document
+legend = lemon::g_legend(a + theme(legend.position='bottom'))
+plt_svi_themes = ggarrange(
+  a + theme(legend.position = "none"), 
+  b + theme(legend.position = "none"),
+  c + theme(legend.position = "none"), 
+  d + theme(legend.position = "none"), 
+  ncol = 4)
+annotate_figure(plt_svi_themes, top = text_grob("Map 5: Maps of Social Vulnerability Index Themes, 2022", size = 14), bottom = legend)
 ```
 
 \newpage
 
 The EJI contains 3 themes, and the distribution of those themes are shown below. Quantiles of these values will be made available upon request. 
 
-```{r, echo = FALSE}
-a = ggplot(data = eji_map, aes(fill = RPL_EBM)) + 
+```{r}
+# join themes to  eji_map
+df_eji = df_eji %>% select(geoid, starts_with("rpl_"), -rpl_eji)
+eji_map = left_join(eji_map, df_eji, by = join_by(GEO_ID == geoid))
+
+a = ggplot(data = eji_map, aes(fill = rpl_mod1)) + 
   geom_sf(lwd = 0.1) + 
   theme_void() + 
   labs(title =  "Enviornmental Burden", fill = "Enviornmental Burden Values") +
   scale_fill_viridis_b()
 
-b = ggplot(data = eji_map, aes(fill = RPL_SVM)) + 
+b = ggplot(data = eji_map, aes(fill = rpl_mod2)) + 
   geom_sf(lwd = 0.1) + 
   theme_void() + 
   labs(title =  "Social Vulnerability", fill = "Social Vulnerabilty Values") +
   scale_fill_viridis_b()
 
-c = ggplot(data = eji_map, aes(fill = RPL_HVM)) + 
+c = ggplot(data = eji_map, aes(fill = rpl_mod3)) + 
   geom_sf(lwd = 0.1) + 
   theme_void() +
   labs(title =  "Health Vulnerability", fill = "Health Vulnerability Values") +
   scale_fill_viridis_b()
-
-plt_eji_themes = ggarrange(a,b,c, ncol = 2, nrow = 2)
-annotate_figure(plt_eji_themes, top = text_grob("Maps of Envivornmental Justice Index Themes, 2022", size = 14))
+# join maps on one shared document
+plt_eji_themes = ggarrange(
+  a + theme(legend.position = "none"), 
+  b + theme(legend.position = "none"),
+  c + theme(legend.position = "none"),
+  ncol = 3)
+annotate_figure(plt_eji_themes, top = text_grob("Map 6: Maps of Envivornmental Justice Index Themes, 2022", size = 14), bottom = legend)
 ```
+\newpage 
+# Code Appendix
 
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+```

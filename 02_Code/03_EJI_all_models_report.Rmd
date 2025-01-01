@@ -1463,7 +1463,7 @@ annotate_figure(plot_lst[["ep_groupq"]],
                 top = text_grob("Distibution of Percentage of persons in group quarters estimate", face = "bold", size = 12),
                 fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 
-annotate_figure(plot_lst[["ep_mobile"]],
+annotate_figure(plot_lst[[""]],
                 top = text_grob("Distibution of Percentage of Mobile Homes", face = "bold", size = 12),
                 fig.lab = "A.C.S. 2015-2019", fig.lab.pos = c("bottom.right"), fig.lab.size = 9)
 ```
